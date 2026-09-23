@@ -1,7 +1,11 @@
 # 模型供应商配置。复制为 models.toml（放在本项目根目录，或 ~/.mole-agent/models.toml）后按需修改。
 #
 # - API key 不写在这里：用 api_key_env 指向环境变量，把 key 填进 .env（已被 .gitignore 忽略）。
-#   内部网关不需要 key 时写 api_key = "none"。
+# - 鉴权方式 auth（可选）：
+#     "api_key"  默认，发 Authorization: Bearer <key>
+#     "headers"  不用 API key，靠 headers 里的请求头鉴权（如 ModelArts 在线服务），不发 Authorization
+#     "none"     不鉴权（本地 vLLM、不校验的内部网关）
+# - headers 的值可以写 ${环境变量}，从 .env 取值，token 之类的密钥不要直接写在这里。
 # - client_provider 是 openjiuwen 的协议/厂商标识：
 #     OpenAI（任何 OpenAI 兼容接口）、Anthropic，以及 OpenAI 兼容协议上的厂商适配：
 #     DeepSeek、DashScope、Moonshot、Zhipu、SiliconFlow、OpenRouter、ModelArts、VolcEngine、Qianfan、MiniMax
@@ -11,6 +15,13 @@
 
 # 启动默认使用的模型（命令行 -m 或上次 /model 切换的结果优先）
 default = "deepseek/deepseek-flash"
+
+# 子 agent 用的模型（可选）。没写的子 agent 跟随主 agent 当前模型（/model 切换后也跟着变）。
+# 写法同 -m：供应商/模型、供应商、模型名。配置的供应商没有 key 时回落到主模型，启动时会提示。
+# 例如：探索用便宜快的模型，检视用更强的模型。
+# [subagents]
+# explore_agent = "deepseek/deepseek-flash"
+# code_reviewer = "deepseek/deepseek-v4-pro"
 
 [providers.deepseek]
 client_provider = "DeepSeek"
@@ -36,11 +47,21 @@ api_base = "https://open.bigmodel.cn/api/paas/v4"
 api_key_env = "ZHIPU_API_KEY"
 models = []
 
-[providers.huawei]                    # 华为云 ModelArts MaaS，模型名以控制台「调用说明」为准
+[providers.huawei]                    # 华为云 ModelArts MaaS（API key 鉴权），模型名以控制台「调用说明」为准
 client_provider = "ModelArts"
 api_base = "https://api.modelarts-maas.com/openai/v1"
 api_key_env = "MAAS_API_KEY"
 models = []
+
+# ModelArts 在线服务 / 内部部署：不用 API key，靠请求头鉴权。取消注释后填上自己的地址、请求头和模型名。
+#   常见请求头：X-Auth-Token（IAM Token 认证）、X-Apig-AppCode（APP 认证），以服务「调用指南」为准；
+#   可以写多个，例如再加上租户头 "X-Project-Id" = "${MODELARTS_PROJECT_ID}"。
+# [providers.modelarts]
+# client_provider = "ModelArts"
+# api_base = "https://<在线服务调用地址>/v1"       # 写到 /v1；写成完整的 …/chat/completions 也可以
+# auth = "headers"
+# headers = { "X-Auth-Token" = "${MODELARTS_TOKEN}" }
+# models = ["<部署的模型名>"]
 
 [providers.siliconflow]
 client_provider = "SiliconFlow"
@@ -70,7 +91,7 @@ models = []
 # [providers.internal]
 # client_provider = "OpenAI"
 # api_base = "https://llm-gateway.example.com/v1"
-# api_key_env = "INTERNAL_LLM_KEY"
+# api_key_env = "INTERNAL_LLM_KEY"          # 不需要 key 时去掉这行，改写 auth = "none"
 # verify_ssl = false                  # 自签证书时
 # headers = { "X-Tenant" = "my-team" }
 # models = ["coder-large", "coder-small"]

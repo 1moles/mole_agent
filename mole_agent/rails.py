@@ -6,7 +6,9 @@ before/after_tool_call 等），priority 越大越先执行。这里演示几类
 - CommandGuardRail：硬拦截。bash 命令命中拒绝规则直接驳回，不执行、也不打扰用户。
 - ApprovalRail：人工确认。继承 SDK 的 ConfirmInterruptRail，高危工具先中断等人确认，
   并支持「本会话总是允许」。
-- ToolTraceRail：旁路观测。把工具调用写进输出流（给终端 UI 渲染）并落审计日志。
+- ReadOnlyShellRail：子 agent 专用，bash 只放行只读命令。
+- ToolTraceRail：旁路观测。把工具调用写进输出流（给终端 UI 渲染）并落审计日志；
+  子 agent 的调用经 ActivityFeed 转给终端。
 - TokenUsageRail：统计 token 用量。
 
 before_tool_call 执行顺序：CommandGuardRail(95) → ApprovalRail(90) → ToolTraceRail(5)
@@ -18,7 +20,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.session.interaction.base import AgentInterrupt
@@ -122,14 +124,46 @@ def _result_to_text(result: Any) -> tuple[bool, str]:
     return True, str(result)
 
 
+class ActivityFeed:
+    """子 agent 的活动转发给终端。
+
+    task_tool 在内部消费子 agent 的输出流、只把最终答复交回主 agent（openjiuwen 0.1.18），
+    子 agent 的工具调用不会出现在主 agent 的流里。子 agent 的 ToolTraceRail 把事件发到这里，
+    终端订阅后就能显示子 agent 正在做什么。
+    """
+
+    def __init__(self) -> None:
+        self._listeners: list[Callable[[dict[str, Any]], None]] = []
+
+    def subscribe(self, listener: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        """返回取消订阅的函数。"""
+        self._listeners.append(listener)
+        return lambda: self._listeners.remove(listener) if listener in self._listeners else None
+
+    def emit(self, event: dict[str, Any]) -> None:
+        for listener in list(self._listeners):
+            try:
+                listener(event)
+            except Exception:  # noqa: BLE001 —— 显示出错不能影响子 agent 执行
+                pass
+
+
 class ToolTraceRail(AgentRail):
     """把每次工具调用写成流式 chunk，并可选写入 JSONL 审计日志。"""
 
     priority = 5  # 很低：安全/确认类 rail 先裁决；等待确认中的调用不会出现，被驳回的会带 decision 标记
 
-    def __init__(self, audit_path: Optional[Path] = None, project_dir: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        audit_path: Optional[Path] = None,
+        project_dir: Optional[Path] = None,
+        agent_name: str = "main",
+        feed: Optional["ActivityFeed"] = None,
+    ) -> None:
         self._audit_path = audit_path
         self._project_dir = str(project_dir) if project_dir else None
+        self._agent_name = agent_name  # 审计里区分主 agent 与各个子 agent
+        self._feed = feed              # 子 agent 用：输出流到不了终端，改走 ActivityFeed
         self._started: dict[str, float] = {}
         if audit_path:
             audit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,16 +176,15 @@ class ToolTraceRail(AgentRail):
     async def before_tool_call(self, ctx: Any) -> None:
         inputs = ctx.inputs
         self._started[self._call_id(inputs)] = time.monotonic()
+        payload = {
+            "tool_name": getattr(inputs, "tool_name", ""),
+            "tool_args": _normalize_args(getattr(inputs, "tool_args", None)),
+        }
+        if self._feed is not None:
+            self._feed.emit({"agent": self._agent_name, "type": CHUNK_TOOL_CALL, **payload})
         if ctx.session is None:
             return
-        await ctx.session.write_stream(OutputSchema(
-            type=CHUNK_TOOL_CALL,
-            index=0,
-            payload={
-                "tool_name": getattr(inputs, "tool_name", ""),
-                "tool_args": _normalize_args(getattr(inputs, "tool_args", None)),
-            },
-        ))
+        await ctx.session.write_stream(OutputSchema(type=CHUNK_TOOL_CALL, index=0, payload=payload))
 
     async def after_tool_call(self, ctx: Any) -> None:
         # after 钩子在 finally 里总会触发（含异常）。等待人工确认的中断不是失败：
@@ -171,22 +204,22 @@ class ToolTraceRail(AgentRail):
         started = self._started.pop(self._call_id(inputs), None)
         elapsed_ms = int((time.monotonic() - started) * 1000) if started else None
 
+        payload = {
+            "tool_name": tool_name,
+            "tool_args": tool_args,
+            "ok": ok,
+            "decision": decision,
+            "text": text,
+            "elapsed_ms": elapsed_ms,
+        }
+        if self._feed is not None:
+            self._feed.emit({"agent": self._agent_name, "type": CHUNK_TOOL_RESULT, **payload})
         if ctx.session is not None:
-            await ctx.session.write_stream(OutputSchema(
-                type=CHUNK_TOOL_RESULT,
-                index=0,
-                payload={
-                    "tool_name": tool_name,
-                    "tool_args": tool_args,
-                    "ok": ok,
-                    "decision": decision,
-                    "text": text,
-                    "elapsed_ms": elapsed_ms,
-                },
-            ))
+            await ctx.session.write_stream(OutputSchema(type=CHUNK_TOOL_RESULT, index=0, payload=payload))
         self._audit({
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "project": self._project_dir,
+            "agent": self._agent_name,
             "tool": tool_name,
             "args": tool_args,
             "ok": ok,
@@ -234,6 +267,93 @@ class TokenUsageRail(AgentRail):
             "output_tokens": self.output_tokens,
             "total_tokens": self.input_tokens + self.output_tokens,
         }
+
+
+# 只读 shell：子 agent 没有交互入口，不能靠人工确认兜底，所以只放行明确只读的命令
+_READ_ONLY_COMMANDS = {
+    "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "find", "pwd", "echo",
+    "file", "stat", "du", "sort", "cut", "diff", "which", "basename", "dirname",
+}
+# 白名单命令里个别参数也能写文件或执行其他程序，单独拦掉
+_WRITE_OR_EXEC_FLAGS = {
+    "find": ("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"),
+    "sort": ("-o", "--output"),
+    "rg": ("--pre",),
+}
+_READ_ONLY_GIT_SUBCOMMANDS = {
+    "status", "diff", "log", "show", "blame", "grep", "ls-files", "ls-tree", "rev-parse",
+    "describe", "shortlog", "cat-file", "merge-base", "rev-list", "branch",
+}
+_GIT_BRANCH_WRITE_FLAGS = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--set-upstream-to", "-u"}
+_GIT_WRITE_OR_EXEC_FLAGS = ("--output", "-O", "--open-files-in-pager", "--ext-diff")
+_HARMLESS_REDIRECTS = ("&>/dev/null", "2>/dev/null", ">/dev/null", "2>&1")
+
+
+def read_only_violation(command: str) -> Optional[str]:
+    """返回命令不是只读的原因；是只读命令时返回 None。宁可误拒，不可误放。"""
+    text = command.strip()
+    if not text:
+        return "空命令"
+    for harmless in _HARMLESS_REDIRECTS:
+        text = text.replace(harmless, " ")
+    for token, why in ((">", "输出重定向会写文件"), ("`", "命令替换"), ("$(", "命令替换"), ("<(", "进程替换")):
+        if token in text:
+            return why
+    for segment in split_shell_command(text):
+        words = segment.split()
+        if not words:
+            continue
+        if "=" in words[0]:
+            return f"不允许设置环境变量：{words[0]}"
+        base = words[0].rsplit("/", 1)[-1]
+        if base == "git":
+            args = words[1:]
+            while args and args[0] in {"-C", "--no-pager"}:  # 跳过全局选项（-c 可改配置，不放行）
+                args = args[2:] if args[0] == "-C" else args[1:]
+            sub = args[0] if args else ""
+            if sub not in _READ_ONLY_GIT_SUBCOMMANDS:
+                return f"git {sub or '(无子命令)'} 不是只读操作"
+            if sub == "branch" and any(a in _GIT_BRANCH_WRITE_FLAGS for a in args[1:]):
+                return "git branch 带了修改分支的参数"
+            if any(a.startswith(_GIT_WRITE_OR_EXEC_FLAGS) for a in args[1:]):
+                return "git 参数会写文件或调用外部程序"
+            continue
+        if base not in _READ_ONLY_COMMANDS:
+            return f"{base} 不在只读命令白名单里"
+        risky = _WRITE_OR_EXEC_FLAGS.get(base, ())
+        if any(w == f or w.startswith(f + "=") for w in words[1:] for f in risky):
+            return f"{base} 带了写文件或执行程序的参数"
+    return None
+
+
+class ReadOnlyShellRail(BaseInterruptRail):
+    """只读子 agent 的 bash 守卫：只放行白名单里的只读命令，其余直接驳回。
+
+    子 agent 由 task_tool 在内部运行，它触发的人工确认不会传到用户终端（openjiuwen 0.1.18），
+    所以子 agent 不挂 ApprovalRail，而是用这个 rail 把 bash 限制成只读。
+    """
+
+    priority = 95  # 与 CommandGuardRail 同级：先于任何可能执行的环节
+
+    def __init__(self, tool_names: Iterable[str] = ("bash",)) -> None:
+        super().__init__(tool_names=tool_names)
+
+    async def resolve_interrupt(self, ctx, tool_call, user_input, auto_confirm_config=None):
+        args = getattr(ctx.inputs, "tool_args", None)
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                args = {"command": args}
+        command = str((args or {}).get("command", "")) if isinstance(args, dict) else ""
+        reason = read_only_violation(command)
+        if reason is None:
+            return self.approve()
+        _mark_rejected(ctx, tool_call, "guard")
+        return self.reject(tool_result=(
+            f"只读子 agent 不能执行这条命令（{reason}）。请改用 read_file / grep / glob / git_changes，"
+            "或在最终报告里建议主 agent 去执行。"
+        ))
 
 
 class ApprovalRail(ConfirmInterruptRail):

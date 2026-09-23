@@ -3,7 +3,7 @@
 分层关系（从下往上）：
     openjiuwen.core      模型客户端 / 工具 / Session / Runner / ReAct 循环
     openjiuwen.harness   DeepAgent：任务循环、上下文工程、子智能体、技能、工作区
-    mole_agent           本项目：人设、自定义工具、自定义 rails、终端交互
+    mole_agent           本项目：人设、自定义工具、子 agent、自定义 rails、终端交互
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from openjiuwen.core.foundation.llm import init_model
+from openjiuwen.core.foundation.llm import LLMAuthMode, Model, ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
@@ -29,7 +29,7 @@ from openjiuwen.harness.workspace.workspace import Workspace
 from mole_agent.config import Settings
 from mole_agent.models import ModelChoice, ModelSelectionError
 from mole_agent.prompts import build_system_prompt
-from mole_agent.rails import ApprovalRail, CommandGuardRail, TokenUsageRail, ToolTraceRail
+from mole_agent.rails import ActivityFeed, ApprovalRail, CommandGuardRail, TokenUsageRail, ToolTraceRail
 from mole_agent.tools import build_custom_tools
 
 log = logging.getLogger("mole_agent")
@@ -43,23 +43,40 @@ class AgentBundle:
     usage: TokenUsageRail
     approval: ApprovalRail | None
     mcp_names: list[str]
+    subagents: dict[str, str] = field(default_factory=dict)   # 子 agent 名 → 使用的模型（显示用）
+    activity: ActivityFeed = field(default_factory=ActivityFeed)  # 子 agent 的工具调用，终端订阅显示
+    warnings: list[str] = field(default_factory=list)
+
+
+# models.toml 的 auth → openjiuwen 的鉴权方式；api_key 是 SDK 默认值，不显式传
+_AUTH_MODES = {"headers": LLMAuthMode.CustomHeaders, "none": LLMAuthMode.NoneAuth}
 
 
 def build_model(settings: Settings):
-    kwargs: dict[str, Any] = dict(
-        provider=settings.provider,
-        model_name=settings.model,
+    """等价于 init_model(...)，多支持一个鉴权方式。
+
+    init_model 没有 auth_mode 参数，请求头鉴权（auth = "headers"）要直接构造 ModelClientConfig：
+    auth_mode=custom_headers 且没有 key 时，SDK 不发 Authorization，只发 custom_headers。
+    """
+    client_kwargs: dict[str, Any] = dict(
+        client_provider=settings.provider,
         api_key=settings.api_key,
         api_base=settings.api_base,
-        max_tokens=settings.max_tokens,
         timeout=settings.timeout,
+        max_retries=3,  # 与 init_model 的默认值一致
         verify_ssl=settings.verify_ssl,
+        custom_headers=dict(settings.custom_headers) or None,
     )
-    if settings.temperature is not None:
-        kwargs["temperature"] = settings.temperature
-    if settings.custom_headers:
-        kwargs["custom_headers"] = dict(settings.custom_headers)
-    return init_model(**kwargs)
+    if settings.auth in _AUTH_MODES:
+        client_kwargs["auth_mode"] = _AUTH_MODES[settings.auth]
+    return Model(
+        model_client_config=ModelClientConfig(**client_kwargs),
+        model_config=ModelRequestConfig(
+            model=settings.model,
+            temperature=settings.temperature,
+            max_tokens=settings.max_tokens,
+        ),
+    )
 
 
 def switch_model(bundle: "AgentBundle", settings: Settings, choice: ModelChoice) -> None:
@@ -190,9 +207,31 @@ def build_sys_operation(settings: Settings) -> Optional[SysOperation]:
     return Runner.resource_mgr.get_sys_operation(sysop_id)
 
 
+def build_subagent_configs(
+    settings: Settings,
+    sys_operation: Optional[SysOperation],
+    usage: TokenUsageRail,
+    activity: ActivityFeed,
+) -> tuple[list[Any], dict[str, str], list[str]]:
+    """扫描 mole_agent/subagents/，返回 (SubAgentConfig 列表, {名字: 模型}, 警告)。"""
+    if not settings.enable_subagents:
+        return [], {}, []
+    from mole_agent.subagents import SubagentEnv, build_subagents
+
+    env = SubagentEnv(
+        settings=settings, build_model=build_model, sys_operation=sys_operation,
+        usage_rail=usage, feed=activity,
+    )
+    configs = build_subagents(env)
+    names = {c.agent_card.name: env.model_label(c.agent_card.name) for c in configs}
+    return configs, names, env.warnings
+
+
 def build_agent(settings: Settings) -> AgentBundle:
     model = build_model(settings)
     lang = settings.language
+    sys_operation = build_sys_operation(settings)  # 沙箱 = 项目目录 + 工作区 + 技能目录，子 agent 共用
+    activity = ActivityFeed()
 
     usage = TokenUsageRail()
     trace = ToolTraceRail(
@@ -232,6 +271,7 @@ def build_agent(settings: Settings) -> AgentBundle:
         tools += create_web_tools(language=lang, agent_id=AGENT_ID)
 
     mcps = load_mcp_configs(settings)
+    subagents, subagent_models, warnings = build_subagent_configs(settings, sys_operation, usage, activity)
 
     settings.workspace_dir.mkdir(parents=True, exist_ok=True)
     workspace = Workspace(root_path=str(settings.workspace_dir), language=lang)
@@ -239,19 +279,23 @@ def build_agent(settings: Settings) -> AgentBundle:
     agent = create_deep_agent(
         model,
         card=AgentCard(id=AGENT_ID, name=AGENT_ID, description=f"{settings.agent_name} 编码助手"),
-        system_prompt=build_system_prompt(settings),
+        system_prompt=build_system_prompt(settings, subagents=list(subagent_models)),
         tools=tools,
         mcps=mcps or None,
+        subagents=subagents or None,  # 非空时 SDK 自动挂 SubagentRail，注册 task_tool
         rails=rails,
         enable_task_loop=True,        # 外层任务循环：模型说「做完了」之前持续推进
         enable_task_planning=True,    # todo 规划工具
         max_iterations=settings.max_iterations,
         workspace=workspace,          # agent 私有工作区：~/.mole-agent/workspace
         restrict_to_work_dir=settings.restrict_to_project,
-        sys_operation=build_sys_operation(settings),  # 沙箱 = 项目目录 + 工作区 + 技能目录
+        sys_operation=sys_operation,
         language=lang,
         # 以下两个字段透传给 DeepAgentConfig：shell 在项目目录执行、相对路径以项目为基准
         cwd=str(settings.project_dir),
         project_root=str(settings.project_dir),
     )
-    return AgentBundle(agent=agent, usage=usage, approval=approval, mcp_names=[c.server_name for c in mcps])
+    return AgentBundle(
+        agent=agent, usage=usage, approval=approval, mcp_names=[c.server_name for c in mcps],
+        subagents=subagent_models, activity=activity, warnings=warnings,
+    )

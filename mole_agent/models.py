@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,22 @@ class ModelSelectionError(ValueError):
     """模型选择写法有误，或目标供应商配置不完整。"""
 
 
+# 鉴权方式（models.toml 里的 auth）→ openjiuwen 的 LLMAuthMode
+#   api_key  默认：Authorization: Bearer <key>
+#   headers  靠 headers 里的请求头鉴权（如 ModelArts 在线服务的 X-Auth-Token / X-Apig-AppCode），不发 Authorization
+#   none     不鉴权（本地 vLLM 等）
+AUTH_MODES = ("api_key", "headers", "none")
+_AUTH_ALIASES = {
+    "api_key": "api_key", "apikey": "api_key", "key": "api_key", "bearer": "api_key",
+    "headers": "headers", "header": "headers", "custom_headers": "headers",
+    "none": "none", "no_auth": "none",
+}
+# 请求头取值里的 ${VAR} 从环境变量（含 .env）读取，密钥不用写进 models.toml
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+# openjiuwen 会丢弃自定义请求头里的这些键（header_utils.PROTECTED_HEADERS）
+_DROPPED_HEADERS = {"authorization", "host", "content-length", "transfer-encoding", "connection"}
+
+
 @dataclass
 class ProviderConfig:
     name: str
@@ -46,7 +63,8 @@ class ProviderConfig:
     timeout: Optional[float] = None
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
-    headers: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)   # 原样保存，值里可以有 ${VAR}
+    auth: str = "api_key"                                    # 见 AUTH_MODES
 
     @property
     def resolved_api_key(self) -> str:
@@ -56,13 +74,43 @@ class ProviderConfig:
             return os.getenv(self.api_key_env, "").strip()
         return ""
 
+    @property
+    def resolved_headers(self) -> dict[str, str]:
+        """把请求头里的 ${VAR} 换成环境变量的值；变量没设置时替换成空串（problems() 会报出来）。"""
+        return {
+            key: _ENV_REF_RE.sub(lambda m: os.getenv(m.group(1), "").strip(), value)
+            for key, value in self.headers.items()
+        }
+
+    def missing_env(self) -> list[str]:
+        """还没设置的环境变量：API key 的，以及请求头里 ${VAR} 引用的。"""
+        missing: list[str] = []
+        if self.auth == "api_key" and not self.api_key and self.api_key_env and not self.resolved_api_key:
+            missing.append(self.api_key_env)
+        for value in self.headers.values():
+            for var in _ENV_REF_RE.findall(value):
+                if not os.getenv(var, "").strip() and var not in missing:
+                    missing.append(var)
+        return missing
+
     def problems(self) -> list[str]:
         out: list[str] = []
         if not self.api_base:
             out.append(f"供应商 {self.name} 缺少 api_base")
-        if not self.resolved_api_key and self.client_provider != "OpenAIAccount":
+        if self.auth == "api_key" and not self.resolved_api_key and self.client_provider != "OpenAIAccount":
             hint = f"请设置环境变量 {self.api_key_env}" if self.api_key_env else "请配置 api_key 或 api_key_env"
-            out.append(f"供应商 {self.name} 缺少 API key（{hint}）")
+            out.append(f"供应商 {self.name} 缺少 API key（{hint}；不用 key、靠请求头鉴权的写 auth = \"headers\"）")
+        if self.auth == "headers" and not self.headers:
+            out.append(f"供应商 {self.name} 设置了 auth = \"headers\"，但没有配置 headers")
+        dropped = [k for k in self.headers if k.lower() in _DROPPED_HEADERS]
+        if dropped:
+            out.append(
+                f"供应商 {self.name} 的请求头 {'、'.join(dropped)} 会被 openjiuwen 丢弃，不会发出去；"
+                "Bearer 鉴权请用 api_key_env，其他鉴权方式请改用网关支持的专用请求头"
+            )
+        header_vars = [v for v in self.missing_env() if v != self.api_key_env]
+        if header_vars:
+            out.append(f"供应商 {self.name} 的请求头需要环境变量 {'、'.join(header_vars)}（在 .env 里设置）")
         return out
 
 
@@ -81,6 +129,8 @@ class ModelCatalog:
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     default: str = ""
     sources: list[Path] = field(default_factory=list)
+    # 子 agent 专用模型：{子 agent 名: "供应商/模型"}；没配置的子 agent 跟随主 agent 当前模型
+    subagent_models: dict[str, str] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
         return not self.providers
@@ -127,18 +177,34 @@ def _parse_provider(name: str, raw: dict[str, Any]) -> ProviderConfig:
     models = raw.get("models") or []
     if isinstance(models, str):
         models = [models]
+    headers = raw.get("headers") or {}
+    if not isinstance(headers, dict):
+        raise ModelSelectionError(f"models.toml 中供应商 {name} 的 headers 应写成表，例如 headers = {{ \"X-Auth-Token\" = \"${{TOKEN}}\" }}")
+    api_key = str(raw.get("api_key", "")).strip()
+    api_key_env = str(raw.get("api_key_env", "")).strip()
+    raw_auth = str(raw.get("auth") or "").strip().lower()
+    if raw_auth:
+        auth = _AUTH_ALIASES.get(raw_auth)
+        if auth is None:
+            raise ModelSelectionError(
+                f"models.toml 中供应商 {name} 的 auth={raw_auth!r} 不支持，可选：{'、'.join(AUTH_MODES)}"
+            )
+    else:
+        # 没写 auth：只配了请求头、没配任何 key 时，按请求头鉴权处理
+        auth = "headers" if headers and not api_key and not api_key_env else "api_key"
     return ProviderConfig(
         name=name,
         client_provider=client_provider,
         api_base=str(raw.get("api_base", "")).strip(),
-        api_key=str(raw.get("api_key", "")).strip(),
-        api_key_env=str(raw.get("api_key_env", "")).strip(),
+        api_key=api_key,
+        api_key_env=api_key_env,
         models=[str(m) for m in models],
         verify_ssl=raw.get("verify_ssl"),
         timeout=raw.get("timeout"),
         max_tokens=raw.get("max_tokens"),
         temperature=raw.get("temperature"),
-        headers={str(k): str(v) for k, v in (raw.get("headers") or {}).items()},
+        headers={str(k): str(v) for k, v in headers.items()},
+        auth=auth,
     )
 
 
@@ -154,6 +220,10 @@ def load_catalog(paths: list[Path]) -> ModelCatalog:
         catalog.sources.append(path)
         if not catalog.default and data.get("default"):
             catalog.default = str(data["default"])
+        subagents = data.get("subagents")
+        if isinstance(subagents, dict):
+            for agent_name, spec in subagents.items():
+                catalog.subagent_models.setdefault(str(agent_name), str(spec))
         for name, raw in (data.get("providers") or {}).items():
             if name not in catalog.providers and isinstance(raw, dict):
                 catalog.providers[name] = _parse_provider(name, raw)
@@ -210,17 +280,19 @@ async def list_remote_models(provider: ProviderConfig, *, timeout: float = 15.0)
     """调用供应商的 /models 接口。OpenAI 兼容：GET {api_base}/models；Anthropic：GET {base}/v1/models。"""
     import httpx
 
-    key = provider.resolved_api_key
-    headers = dict(provider.headers)
+    key = provider.resolved_api_key if provider.auth != "none" else ""
+    headers = provider.resolved_headers
     base = provider.api_base.rstrip("/")
     if provider.client_provider == "Anthropic":
         if base.endswith("/v1"):
             base = base[:-3]
         url = f"{base}/v1/models"
-        headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
+        headers["anthropic-version"] = "2023-06-01"
+        if key and provider.auth == "api_key":
+            headers["x-api-key"] = key
     else:
         url = f"{base}/models"
-        if key:
+        if key and provider.auth == "api_key":  # 请求头鉴权时和模型调用一样不发 Authorization
             headers["Authorization"] = f"Bearer {key}"
 
     verify = True if provider.verify_ssl is None else bool(provider.verify_ssl)

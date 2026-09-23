@@ -92,7 +92,8 @@ class Settings:
     max_tokens: int = 8192
     timeout: float = 120.0
     verify_ssl: bool = True
-    custom_headers: dict[str, str] = field(default_factory=dict)
+    custom_headers: dict[str, str] = field(default_factory=dict)   # 已把 ${VAR} 换成实际值
+    auth: str = "api_key"             # api_key / headers / none，见 models.AUTH_MODES
     provider_name: str = ""           # models.toml 里的供应商名
     catalog: ModelCatalog = field(default_factory=ModelCatalog)
     model_error: str = ""
@@ -116,6 +117,7 @@ class Settings:
     # 可选能力
     enable_web: bool = False
     enable_context_rails: bool = True
+    enable_subagents: bool = True
     audit_log: bool = True
     verbose: bool = False
 
@@ -139,8 +141,9 @@ class Settings:
         self.provider = p.client_provider
         self.model = choice.model
         self.api_base = p.api_base
-        self.api_key = p.resolved_api_key
-        self.custom_headers = dict(p.headers)
+        self.api_key = p.resolved_api_key if p.auth != "none" else ""
+        self.custom_headers = p.resolved_headers
+        self.auth = p.auth
         self.temperature = p.temperature if p.temperature is not None else d.get("temperature")
         self.max_tokens = int(p.max_tokens if p.max_tokens is not None else d.get("max_tokens") or 8192)
         self.timeout = float(p.timeout if p.timeout is not None else d.get("timeout") or 120.0)
@@ -187,7 +190,7 @@ class Settings:
         else:
             if not self.api_base:
                 problems.append(f"{self.model_spec} 缺少 api_base")
-            if not self.api_key and self.provider != "OpenAIAccount":
+            if self.auth == "api_key" and not self.api_key and self.provider != "OpenAIAccount":
                 problems.append(f"{self.model_spec} 缺少 API key")
         if self.language not in {"cn", "en"}:
             problems.append(f"MOLE_LANGUAGE 只能是 cn 或 en，当前为 {self.language!r}")
@@ -227,6 +230,7 @@ def load_settings(
         bash_deny_patterns=[*DEFAULT_BASH_DENY, *extra_deny],
         enable_web=_get_bool("ENABLE_WEB", False),
         enable_context_rails=_get_bool("ENABLE_CONTEXT_RAILS", True),
+        enable_subagents=_get_bool("ENABLE_SUBAGENTS", True),
         audit_log=_get_bool("AUDIT_LOG", True),
         verbose=verbose,
     )

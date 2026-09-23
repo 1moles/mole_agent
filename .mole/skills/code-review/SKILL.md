@@ -14,11 +14,12 @@ description: 检视 Mole（kernel 项目）的代码改动——未提交改动�
 |---|---|
 | 没说 / 「我改的」「未提交的」 | `git_changes` |
 | 「暂存的」「add 过的」 | `git_changes`，`staged=true` |
-| 某个提交 | `bash`：`git show --stat <sha>`，再 `git show <sha>` |
-| 分支、「和 main 比」 | `bash`：`git diff <base>...HEAD --stat`，再 `git diff <base>...HEAD` |
+| 某个提交 | `git_changes`，`commit=<sha>` |
+| 分支、「和 main 比」 | `git_changes`，`base=<分支>`（看 `<分支>...HEAD`） |
 | 指定文件或目录 | 直接 `read_file`，按整份代码检视 |
 
-范围不明确（比如分不清要对比哪个分支）时用 `ask_user` 问，不要猜。
+范围不明确（比如分不清要对比哪个分支）时用 `ask_user` 问，不要猜；作为 `code_reviewer` 子 agent 运行时
+没有 `ask_user`，按最合理的理解检视，并在「检视范围」里写明假设。
 新增的未跟踪文件（status 里的 `??`）不在 diff 里，要单独 `read_file`。
 
 ## 2. 理解改动，再下结论
@@ -47,7 +48,8 @@ openjiuwen 源码确认）、是否用宽泛的 `try/except` 吞掉了错误、�
 
 ## 4. 验证（可选）
 
-可以提议跑下面的命令作为证据（`bash` 需要用户确认）；不跑也要在结论里说明未验证：
+可以提议跑下面的命令作为证据（`bash` 需要用户确认；作为子 agent 运行时不能执行，写进「未能确认」
+由主 agent 决定是否运行）；不跑也要在结论里说明未验证：
 
 ```bash
 python -m compileall -q mole_agent tests

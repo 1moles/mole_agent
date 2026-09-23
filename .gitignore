@@ -8,3 +8,11 @@ build/
 dist/
 .pytest_cache/
 logs/
+
+# IDE / 编辑器 / 系统生成的文件，不进仓库
+.idea/
+*.iml
+*.iws
+.vscode/
+*.swp
+.DS_Store

@@ -34,7 +34,7 @@ HELP_TEXT = """\
 [bold]斜杠命令[/bold]
   /model [序号|供应商/模型]  切换模型（不带参数时列出可选模型），对话上下文保留
   /models [供应商]   在线查询供应商当前可用的模型
-  /review [补充要求]  检视当前未提交的改动（只读，不改文件）
+  /review [范围或要求]  代码检视（只读）：默认未提交改动，也可以 /review 提交 a1b2c3d、/review 和 main 比
   /new               开启新会话（清空上下文和「总是允许」记录）
   /usage             查看本会话 token 用量
   /help              显示帮助
@@ -43,6 +43,13 @@ HELP_TEXT = """\
   Ctrl+C             打断正在执行的任务
   Ctrl+D             退出
   项目根目录放一个 MOLE.md（或 AGENTS.md / CLAUDE.md）写项目约定，启动时自动加载
+  子 agent（explore_agent / code_reviewer）由主 agent 按需派活，终端里以 │ 开头的行是它们的动作
+"""
+
+# 有 code_reviewer 子 agent 时交给它：检视读的 diff 和上下文不进主对话
+REVIEW_BY_SUBAGENT_PROMPT = """\
+请用 task_tool 调用 code_reviewer 子代理做代码检视，task_description 写：「代码检视。用户的要求：{request}」。
+拿到报告后完整转述给我，不要删改其中的问题和结论；不要修改任何文件。
 """
 
 REVIEW_PROMPT = """\
@@ -72,6 +79,8 @@ def _short(text: Any, limit: int = 100) -> str:
 
 
 def _format_args(tool_name: str, args: Any) -> str:
+    if tool_name == "task_tool" and isinstance(args, dict):
+        return _short(f"{args.get('subagent_type', '?')} · {args.get('task_description', '')}", 90)
     if isinstance(args, dict):
         for key in ("command", "file_path", "path", "pattern", "query", "url"):
             if args.get(key):
@@ -200,6 +209,18 @@ class StreamRenderer:
         elif self.verbose and ctype:
             console.print(f"[dim]  · {esc(ctype)}: {esc(_short(payload, 120))}[/dim]")
 
+    def feed_subagent(self, event: dict[str, Any]) -> None:
+        """子 agent 的工具调用（经 ActivityFeed 转来），缩进显示在 task_tool 下面。"""
+        self._end_text()
+        agent, name = event.get("agent", "?"), event.get("tool_name", "")
+        if event.get("type") == "tool_call":
+            args = _format_args(name, event.get("tool_args"))
+            console.print(f"[dim]  │ {esc(agent)} ● {esc(name)}" + (f"({esc(args)})" if args else "") + "[/dim]")
+        elif str(event.get("decision", "")).startswith("rejected"):
+            console.print(f"  │   ⊘ {_short(event.get('text', ''), 140)}", style="yellow", markup=False)
+        elif not event.get("ok", True):
+            console.print(f"  │   ✗ {_short(event.get('text', ''), 140)}", style="red", markup=False)
+
     def _render_tool_result(self, payload: Any) -> None:
         name = _attr(payload, "tool_name", "")
         ok = _attr(payload, "ok", True)
@@ -215,6 +236,9 @@ class StreamRenderer:
         if not ok:
             console.print(f"  ⎿ {_short(text, 160)}", style="red", markup=False, end="")
             console.print(f"[dim]{suffix}[/dim]")
+            return
+        if name == "task_tool" and ok:
+            console.print(f"[dim]  ⎿ 子 agent 完成，报告 {len(lines)} 行{suffix}[/dim]")
             return
         if name.startswith("todo_") and lines:
             for line in lines[:12]:
@@ -271,9 +295,13 @@ class Repl:
         final = ""
         while True:
             renderer = StreamRenderer(verbose=self.settings.verbose)
-            stream = Runner.run_agent_streaming(self.bundle.agent, {"query": query}, session=self.session_id)
-            async for chunk in stream:
-                renderer.feed(chunk)
+            unsubscribe = self.bundle.activity.subscribe(renderer.feed_subagent)
+            try:
+                stream = Runner.run_agent_streaming(self.bundle.agent, {"query": query}, session=self.session_id)
+                async for chunk in stream:
+                    renderer.feed(chunk)
+            finally:
+                unsubscribe()
             final = renderer.finish() or final
             if not renderer.pending:
                 return final
@@ -371,14 +399,14 @@ class Repl:
             s = self.bundle.usage.summary()
             console.print(
                 f"[dim]当前模型 {esc(self.settings.model_spec)} · 模型调用 {s['model_calls']} 次 · "
-                f"输入 {s['input_tokens']} · 输出 {s['output_tokens']} · 合计 {s['total_tokens']} tokens[/dim]"
+                f"输入 {s['input_tokens']} · 输出 {s['output_tokens']} · 合计 {s['total_tokens']} tokens（含子 agent）[/dim]"
             )
         elif cmd == "/model":
             await self._cmd_model(rest.strip())
         elif cmd == "/models":
             await self._cmd_models(rest.strip())
         elif cmd == "/review":
-            return REVIEW_PROMPT + (f"\n补充要求：{rest.strip()}" if rest.strip() else "")
+            return review_prompt(rest.strip(), "code_reviewer" in self.bundle.subagents)
         else:
             console.print(f"[red]未知命令 {esc(cmd)}，输入 /help 查看[/red]")
         return None
@@ -479,11 +507,17 @@ class Repl:
         console.print("[dim]再见～[/dim]")
 
 
+def review_prompt(request: str, has_reviewer: bool) -> str:
+    if has_reviewer:
+        return REVIEW_BY_SUBAGENT_PROMPT.format(request=request or "检视当前未提交的改动")
+    return REVIEW_PROMPT + (f"\n补充要求：{request}" if request else "")
+
+
 def _friendly_error(exc: Exception) -> str:
     msg = str(exc)
     low = msg.lower()
     if "401" in low or "authentication" in low or "api key" in low:
-        return f"鉴权失败，请检查 MOLE_API_KEY：{msg}"
+        return f"鉴权失败，请检查 .env 里该供应商的 API key，或 models.toml 里 headers 引用的环境变量：{msg}"
     if "429" in low or ("rate" in low and "limit" in low):
         return f"触发限流，稍后再试：{msg}"
     if "timeout" in low or "timed out" in low:
@@ -514,7 +548,9 @@ def print_model_menu(settings: Settings) -> list[ModelChoice]:
     unavailable: list[str] = []
     for provider in catalog.providers.values():
         if provider.problems():
-            unavailable.append(f"{provider.name}({provider.api_key_env or 'api_key'})")
+            missing = provider.missing_env()
+            unavailable.append(f"{provider.name}({'、'.join(missing)})" if missing
+                               else f"{provider.name}（{provider.problems()[0]}）")
             continue
         console.print(f"\n[cyan]{esc(provider.name)}[/cyan] [dim]{esc(provider.client_provider)} · {esc(provider.api_base)}[/dim]")
         if not provider.models:
@@ -527,28 +563,43 @@ def print_model_menu(settings: Settings) -> list[ModelChoice]:
     if current and not any(c.spec == current for c in choices):
         console.print(f"\n[dim]（当前模型 {esc(current)} 不在列表里，是用 供应商/模型 直接指定的）[/dim]")
     if unavailable:
-        console.print(f"\n[dim]未配置 key 的供应商（在 .env 里填上括号中的变量即可使用）：{esc('、'.join(unavailable))}[/dim]")
+        console.print(f"\n[dim]暂不可用的供应商（在 .env 里设置括号中的环境变量即可使用）：{esc('、'.join(unavailable))}[/dim]")
     return choices
 
 
 def _print_banner(settings: Settings, bundle: Any) -> None:
     confirm = ", ".join(settings.confirm_tools) or "无（全部自动执行）"
     mcp = ", ".join(bundle.mcp_names) or "无"
+    subagents = "、".join(f"{name}（{model}）" for name, model in bundle.subagents.items()) or "无"
     body = (
         f"[bold]{esc(settings.agent_name)}[/bold] v{__version__} · openJiuwen DeepAgent\n"
         f"[dim]模型[/dim]  {esc(settings.model_spec)} ({esc(settings.provider)})  [dim]/model 切换[/dim]\n"
         f"[dim]项目[/dim]  {esc(str(settings.project_dir))}\n"
         f"[dim]确认[/dim]  {esc(confirm)}\n"
         f"[dim]MCP [/dim]  {esc(mcp)}\n"
+        f"[dim]子代理[/dim] {esc(subagents)}\n"
         f"[dim]输入 /help 查看命令，Ctrl+C 打断，Ctrl+D 退出[/dim]"
     )
     console.print(Panel(body, border_style="green", expand=False))
+    for warning in bundle.warnings:
+        console.print(f"[yellow]⚠ {esc(warning)}[/yellow]")
+
+
+def describe_auth(settings: Settings) -> str:
+    """只显示请求头的名字，不显示取值（取值通常是密钥）。"""
+    names = "、".join(settings.custom_headers) or "（无）"
+    if settings.auth == "headers":
+        return f"请求头 {names}" + ("，另带 Authorization: Bearer" if settings.api_key else "，不发 Authorization")
+    if settings.auth == "none":
+        return "不鉴权" + (f"（附加请求头 {names}）" if settings.custom_headers else "")
+    return "API key（Authorization: Bearer）" + (f"，附加请求头 {names}" if settings.custom_headers else "")
 
 
 async def _check(settings: Settings) -> int:
     from mole_agent.agent import build_model
 
     console.print(f"模型：{settings.model_spec} @ {settings.api_base} ({settings.provider})", markup=False)
+    console.print(f"鉴权：{describe_auth(settings)}", markup=False)
     try:
         reply = await build_model(settings).invoke([{"role": "user", "content": "只回复两个字：你好"}])
     except Exception as exc:  # noqa: BLE001
