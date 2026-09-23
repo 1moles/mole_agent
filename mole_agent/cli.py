@@ -28,23 +28,12 @@ from mole_agent import __version__
 from mole_agent.config import Settings, load_settings
 from mole_agent.models import ModelChoice, ModelSelectionError, list_remote_models, save_last_model
 
-console = Console(highlight=False)
+from mole_agent.commands import (
+    default_registry, CommandContext, CompletionItem, Message, AgentPrompt, Exit,
+    dispatch, SlashCompleter, command_key_bindings,
+)
 
-HELP_TEXT = """\
-[bold]斜杠命令[/bold]
-  /model [序号|供应商/模型]  切换模型（不带参数时列出可选模型），对话上下文保留
-  /models [供应商]   在线查询供应商当前可用的模型
-  /review [范围或要求]  代码检视（只读）：默认未提交改动，也可以 /review 提交 a1b2c3d、/review 和 main 比
-  /new               开启新会话（清空上下文和「总是允许」记录）
-  /usage             查看本会话 token 用量
-  /help              显示帮助
-  /exit              退出
-[bold]其他[/bold]
-  Ctrl+C             打断正在执行的任务
-  Ctrl+D             退出
-  项目根目录放一个 MOLE.md（或 AGENTS.md / CLAUDE.md）写项目约定，启动时自动加载
-  子 agent（explore_agent / code_reviewer）由主 agent 按需派活，终端里以 │ 开头的行是它们的动作
-"""
+console = Console(highlight=False)
 
 # 有 code_reviewer 子 agent 时交给它：检视读的 diff 和上下文不进主对话
 REVIEW_BY_SUBAGENT_PROMPT = """\
@@ -264,6 +253,7 @@ class Repl:
         settings.home_dir.mkdir(parents=True, exist_ok=True)
         self._prompt: Any = None
         self._answer_prompt: Any = None
+        self.commands = default_registry()
 
     # 输入框按需创建：非终端环境（测试、管道）下不需要 prompt_toolkit
     @property
@@ -272,7 +262,12 @@ class Repl:
             from prompt_toolkit import PromptSession
             from prompt_toolkit.history import FileHistory
 
-            self._prompt = PromptSession(history=FileHistory(str(self.settings.history_path)))
+            self._prompt = PromptSession(
+                history=FileHistory(str(self.settings.history_path)),
+                completer=SlashCompleter(self.commands, self.command_context),
+                complete_while_typing=True,
+                key_bindings=command_key_bindings(),
+            )
         return self._prompt
 
     @property
@@ -381,34 +376,51 @@ class Repl:
         return {"approved": False, "feedback": f"用户拒绝执行。{feedback}".strip(), "auto_confirm": False}
 
     # ---------- 斜杠命令 ----------
-    async def handle_slash(self, text: str) -> str | None:
-        """处理斜杠命令；返回要发给 agent 的文本，或 None 表示已处理完。"""
-        cmd, _, rest = text.partition(" ")
-        cmd = cmd.lower()
-        if cmd in {"/exit", "/quit", "/q"}:
-            raise EOFError
-        if cmd == "/help":
-            console.print(HELP_TEXT)
-        elif cmd == "/new":
+    def command_context(self) -> CommandContext:
+        async def new(args):
             self.session_id = self._new_session_id()
             if self.bundle.approval:
                 self.bundle.approval.always_allow.clear()
             self.bundle.usage.reset()
-            console.print(f"[dim]已开启新会话 {self.session_id}[/dim]")
-        elif cmd == "/usage":
+            return Message(f"已开启新会话 {self.session_id}")
+
+        async def usage(args):
             s = self.bundle.usage.summary()
-            console.print(
-                f"[dim]当前模型 {esc(self.settings.model_spec)} · 模型调用 {s['model_calls']} 次 · "
-                f"输入 {s['input_tokens']} · 输出 {s['output_tokens']} · 合计 {s['total_tokens']} tokens（含子 agent）[/dim]"
+            return Message(
+                f"当前模型 {self.settings.model_spec} · 模型调用 {s['model_calls']} 次 · "
+                f"输入 {s['input_tokens']} · 输出 {s['output_tokens']} · "
+                f"合计 {s['total_tokens']} tokens（含子 agent）"
             )
-        elif cmd == "/model":
-            await self._cmd_model(rest.strip())
-        elif cmd == "/models":
-            await self._cmd_models(rest.strip())
-        elif cmd == "/review":
-            return review_prompt(rest.strip(), "code_reviewer" in self.bundle.subagents)
-        else:
-            console.print(f"[red]未知命令 {esc(cmd)}，输入 /help 查看[/red]")
+
+        async def model(args):
+            await self._cmd_model(args.strip())
+            return Message("")
+
+        async def models(args):
+            await self._cmd_models(args.strip())
+            return Message("")
+
+        async def review(args):
+            return AgentPrompt(review_prompt(args.strip(), "code_reviewer" in self.bundle.subagents))
+
+        def candidates(name):
+            if name == "model":
+                return [CompletionItem(c.spec) for c in usable_choices(self.settings)]
+            return [CompletionItem(name) for name in self.settings.catalog.providers]
+
+        return CommandContext(
+            {"new": new, "usage": usage, "model": model, "models": models, "review": review},
+            candidates,
+        )
+
+    async def handle_slash(self, text: str) -> str | None:
+        result = await dispatch(self.commands, self.command_context(), text)
+        if isinstance(result, Exit):
+            raise EOFError
+        if isinstance(result, AgentPrompt):
+            return result.text
+        if result.text:
+            console.print(result.text, markup=False)
         return None
 
     # ---------- 模型切换 ----------

@@ -39,6 +39,10 @@ REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可�
 （默认未提交改动，也可以 `/review 提交 a1b2c3d`、`/review 和 main 比`），
 `/new` 新会话，`/usage` token 用量，`/help`，`/exit`；`Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
 
+输入 `/` 自动展开命令菜单，继续输入可过滤候选；↑↓ 选择、Tab 补全，选中候选后 Enter 确认，再次 Enter 提交。Esc 关闭菜单并保留输入。`/model ` 和 `/models ` 支持本地配置候选补全。
+
+新增命令通过 `mole_agent/commands/__init__.py` 显式注册 `CommandSpec`，提供异步处理函数和可选参数补全即可自动接入菜单、帮助和分发。架构与取舍见 [斜杠命令设计](docs/slash-command-architecture.md)。
+
 ## 选择供应商和模型
 
 供应商在 `models.toml` 里配置（查找顺序：`~/.mole-agent/models.toml` → 本项目根目录 `models.toml`），
