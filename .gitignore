@@ -8,6 +8,10 @@ build/
 dist/
 .pytest_cache/
 logs/
+*.secret
+*password*
+*token*
+node_modules/
 
 # IDE / 编辑器 / 系统生成的文件，不进仓库
 .idea/
