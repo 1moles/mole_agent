@@ -1,0 +1,76 @@
+# 模型供应商配置。复制为 models.toml（放在本项目根目录，或 ~/.mole-agent/models.toml）后按需修改。
+#
+# - API key 不写在这里：用 api_key_env 指向环境变量，把 key 填进 .env（已被 .gitignore 忽略）。
+#   内部网关不需要 key 时写 api_key = "none"。
+# - client_provider 是 openjiuwen 的协议/厂商标识：
+#     OpenAI（任何 OpenAI 兼容接口）、Anthropic，以及 OpenAI 兼容协议上的厂商适配：
+#     DeepSeek、DashScope、Moonshot、Zhipu、SiliconFlow、OpenRouter、ModelArts、VolcEngine、Qianfan、MiniMax
+# - models 是常用模型的快捷列表，/model 里可以按序号选；不在列表里的模型也能用「供应商/模型名」直接指定。
+#   各家模型名更新很快，下面只是示例，以控制台为准；用 /models <供应商> 可以在线查询当前可用的模型。
+# - 可选的供应商级参数：temperature、max_tokens、timeout、verify_ssl、headers（自定义请求头）。
+
+# 启动默认使用的模型（命令行 -m 或上次 /model 切换的结果优先）
+default = "deepseek/deepseek-flash"
+
+[providers.deepseek]
+client_provider = "DeepSeek"
+api_base = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+models = ["deepseek-flash", "deepseek-v4-pro"]
+
+[providers.qwen]                      # 阿里云百炼
+client_provider = "DashScope"
+api_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+models = ["qwen3-coder-next"]
+
+[providers.kimi]                      # 月之暗面；国际站用 https://api.moonshot.ai/v1
+client_provider = "Moonshot"
+api_base = "https://api.moonshot.cn/v1"
+api_key_env = "MOONSHOT_API_KEY"
+models = ["kimi-k3", "kimi-k2.7-code"]
+
+[providers.glm]                       # 智谱
+client_provider = "Zhipu"
+api_base = "https://open.bigmodel.cn/api/paas/v4"
+api_key_env = "ZHIPU_API_KEY"
+models = []
+
+[providers.huawei]                    # 华为云 ModelArts MaaS，模型名以控制台「调用说明」为准
+client_provider = "ModelArts"
+api_base = "https://api.modelarts-maas.com/openai/v1"
+api_key_env = "MAAS_API_KEY"
+models = []
+
+[providers.siliconflow]
+client_provider = "SiliconFlow"
+api_base = "https://api.siliconflow.cn/v1"
+api_key_env = "SILICONFLOW_API_KEY"
+models = []
+
+[providers.openrouter]                # 模型名形如 anthropic/claude-xxx，写成 openrouter/anthropic/claude-xxx
+client_provider = "OpenRouter"
+api_base = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+models = []
+
+[providers.openai]
+client_provider = "OpenAI"
+api_base = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+models = []
+
+[providers.anthropic]
+client_provider = "Anthropic"
+api_base = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+models = []
+
+# 公司内部模型网关示例（OpenAI 兼容）：
+# [providers.internal]
+# client_provider = "OpenAI"
+# api_base = "https://llm-gateway.example.com/v1"
+# api_key_env = "INTERNAL_LLM_KEY"
+# verify_ssl = false                  # 自签证书时
+# headers = { "X-Tenant" = "my-team" }
+# models = ["coder-large", "coder-small"]

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mole-agent"
+version = "0.2.0"
+description = "Mole：基于 openJiuwen agent-core（DeepAgent harness）的终端编码助手"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "openjiuwen>=0.1.18",
+    "rich>=13.0",
+    "prompt-toolkit>=3.0",
+    "python-dotenv>=1.0",
+    "httpx>=0.27",                 # /models 在线查询供应商模型列表
+    # openjiuwen 0.1.18.x 的打包缺陷：opentelemetry-sdk 只放在 [observability] 可选依赖里，
+    # 但 openjiuwen.agent_evolving 会无条件 import 它（上游 develop 分支已改为必选依赖）
+    "opentelemetry-sdk>=1.25.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+mole = "mole_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mole_agent*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
