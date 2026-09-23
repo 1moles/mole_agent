@@ -35,6 +35,51 @@ cd ~/code/your-project && mole
 常用参数：`-m 供应商/模型`（指定模型）、`-p "解释一下这个仓库"`（单次执行）、`--project DIR`、
 `-y`（全部自动执行，慎用）、`-v`（显示思考过程）、`--list-models`。
 
+### Windows
+
+在 PowerShell 里执行（推荐用 Windows Terminal）：
+
+```powershell
+# 1. Python 3.13 和 Git。Git for Windows 自带 Git Bash，agent 执行 ls、grep 这类命令时会用到
+winget install -e --id Python.Python.3.13
+winget install -e --id Git.Git
+# 装完重新打开终端
+
+# 2. 取代码、建虚拟环境（py 启动器能准确选中 3.13，避开 Microsoft Store 的 python 占位程序）
+git clone https://github.com/1moles/mole_agent.git kernel
+cd kernel
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1      # 报「禁止运行脚本」时先执行：Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+python -m pip install -U pip
+pip install -U openjiuwen
+pip install -e ".[dev]"
+
+# 3. 配置（models.toml 已在仓库里）
+Copy-Item .env.example .env
+notepad .env
+
+# 4. 运行
+$env:PYTHONUTF8 = "1"; setx PYTHONUTF8 1   # 建议：Python 统一按 UTF-8 读写（当前和以后的终端）
+pytest -q
+mole --check
+cd D:\code\your-project; mole
+```
+
+用 uv 也可以：`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` 装好 uv 后，
+`uv venv --python 3.13 .venv`，激活，再 `uv pip install -U openjiuwen` 和 `uv pip install -e ".[dev]"`。
+
+和 macOS / Linux 的差异：
+
+- 配置目录 `~/.mole-agent/` 在 Windows 上是 `C:\Users\<用户名>\.mole-agent\`。
+- 执行命令：openjiuwen 的 `bash` 工具在 Windows 上按命令自动选 shell——PowerShell 语法交给 PowerShell，
+  `ls` / `grep` 这类交给 Git Bash，其余交给 cmd；另外还会多注册一个 `powershell` 工具。
+  两者都要你确认（`MOLE_CONFIRM_TOOLS` 里 `bash` 和 `powershell` 算一组），也都受拦截规则约束
+  （包括 `Remove-Item` 删整个盘、`Format-Volume`、`iwr … | iex` 等）；子 agent 不能用 `powershell`。
+- `Ctrl+C` 只打断当前任务，不会退出程序。
+- 技能软链接需要打开「开发者模式」（设置 → 系统 → 开发者选项）才能创建，否则直接复制技能目录；
+  测试里的软链接用例在不能建软链接时自动跳过。
+- 老式 cmd 窗口里中文和颜色可能显示不正常，用 Windows Terminal 即可。
+
 REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
 （默认未提交改动，也可以 `/review 提交 a1b2c3d`、`/review 和 main 比`），
 `/new` 新会话，`/usage` token 用量，`/help`，`/exit`；`Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
@@ -127,7 +172,7 @@ models = ["<部署的模型名>"]
 ```
 模型发起 tool_call
   → CommandGuardRail (95)  bash 命中拒绝规则 → 直接驳回，模型收到原因
-  → ApprovalRail     (90)  write_file / edit_file / bash → 中断，等你 y / a / n
+  → ApprovalRail     (90)  write_file / edit_file / bash / powershell → 中断，等你 y / a / n
   → ToolTraceRail    (5)   输出 ● tool(args) 到终端
   → 执行工具（文件工具受沙箱限制：只能访问项目目录、~/.mole-agent/workspace 和技能目录）
   → ToolTraceRail          输出 ⎿ 结果摘要，写审计日志 ~/.mole-agent/audit.jsonl
@@ -151,9 +196,9 @@ models = ["<部署的模型名>"]
 | 层 | 机制 | 配置 |
 |---|---|---|
 | 文件沙箱 | 文件工具和命令里引用的路径只能落在项目目录、agent 工作区和技能目录 | `MOLE_RESTRICT_TO_PROJECT` |
-| 命令黑名单 | `CommandGuardRail`：sudo、rm -rf /、强推、reset --hard、curl\|sh 等直接驳回 | `config.DEFAULT_BASH_DENY` + `MOLE_EXTRA_BASH_DENY` |
-| 人工确认 | `ApprovalRail`：写文件、改文件、执行命令前询问；`a` = 本会话总是允许 | `MOLE_CONFIRM_TOOLS`，`-y` 关闭 |
-| 子 agent 只读 | 没有写文件工具；bash 只放行 `ls` / `cat` / `grep` / `git diff` 等只读命令（`ReadOnlyShellRail`）；不挂人工确认 | `rails.read_only_violation` |
+| 命令黑名单 | `CommandGuardRail`：sudo、rm -rf /、强推、reset --hard、curl\|sh，以及 Windows 上删整个盘、格式化、iwr\|iex 等直接驳回；命令按 `\|` `&&` `;` 单个 `&` 和换行切开逐段检查 | `config.DEFAULT_BASH_DENY` + `MOLE_EXTRA_BASH_DENY` |
+| 人工确认 | `ApprovalRail`：写文件、改文件、执行命令（bash / powershell）前询问；`a` = 本会话总是允许 | `MOLE_CONFIRM_TOOLS`，`-y` 关闭 |
+| 子 agent 只读 | 没有写文件工具；bash 只放行 `ls` / `cat` / `grep` / `git diff` 等只读命令，powershell 一律拒绝（`ReadOnlyShellRail`）；不挂人工确认 | `rails.read_only_violation` |
 | 审计 | 每次工具调用一行 JSONL（`agent` 字段区分主 agent 和各子 agent） | `MOLE_AUDIT_LOG` |
 
 > 注意：SDK 的 `BashTool` 自带 `deny_patterns`，但只在环境变量 `OPENJIUWEN_BASH_STRICT=1` 时生效，
@@ -241,6 +286,8 @@ pytest -q        # 不联网、不需要 API key
 - `tests/test_offline.py`：自定义工具的行为、命令拒绝规则、提示词、配置、MCP 解析、agent 组装
 - `tests/test_tools.py`：tools/ 目录约定——自动发现、文件名即工具名、模板可用、写错时的报错
 - `tests/test_models.py`：models.toml 解析、模型选择规则、启动优先级、供应商级参数覆盖
+- `tests/test_windows.py`：powershell 同样受确认 / 拦截 / 只读守卫约束，Windows 危险命令用例表，
+  `&` 和换行不能绕过命令检查，事件循环不支持信号处理时 Ctrl+C 只打断当前任务
 - `tests/test_header_auth.py`：请求头鉴权的解析与校验；起一个本地假服务，确认对话、流式、`--check`、`/models`
   发出的请求都带上了配置的请求头且没有 `Authorization`
 - `tests/test_skills.py`：仓库自带技能的格式检查；项目级 / 用户级 / 软链接技能能被加载和读取，沙箱外仍被拦截

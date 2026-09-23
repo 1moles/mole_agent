@@ -30,8 +30,21 @@ def _home_dir() -> Path:
     return Path(os.getenv("MOLE_HOME", Path.home() / ".mole-agent")).expanduser()
 
 
-# 内置 bash 拒绝规则（正则，忽略大小写），由 rails.CommandGuardRail 执行。
-# 命令会先按 | && || ; 切成子命令再逐段 search（整条命令也会查一遍），
+# 执行命令的工具：bash（Windows 上 SDK 会按命令自动选 PowerShell / Git Bash / cmd），
+# 以及只在 Windows 上注册的 powershell。确认、拦截规则对两者一视同仁。
+SHELL_TOOLS = ("bash", "powershell")
+
+
+def with_shell_group(tools: list[str]) -> list[str]:
+    """确认列表里写了 bash 或 powershell 之一，就两个都确认（旧 .env 里只写了 bash 也不会漏掉 powershell）。"""
+    out = list(tools)
+    if any(t in SHELL_TOOLS for t in out):
+        out += [t for t in SHELL_TOOLS if t not in out]
+    return out
+
+
+# 内置命令拒绝规则（正则，忽略大小写），由 rails.CommandGuardRail 对 bash / powershell 执行。
+# 命令会先按 | && || ; 以及单个 &、换行切成子命令再逐段 search，
 # 所以每条规则描述「单个子命令」长什么样即可。
 DEFAULT_BASH_DENY: list[str] = [
     r"\brm\s+(-[a-z]*\s+)*-[a-z]*r[a-z]*\s+(-[a-z]*\s+)*(/\*?|~/?|\$HOME/?)\s*$",  # rm -rf / 或 ~
@@ -44,6 +57,12 @@ DEFAULT_BASH_DENY: list[str] = [
     r"\bgit\s+reset\s+--hard\b",                        # 丢弃本地修改
     r"\bchmod\s+(-R\s+)?777\s+/",                       # 全盘放权
     r":\(\)\s*\{",                                      # fork 炸弹
+    # Windows（PowerShell / cmd）
+    r"^\s*(stop-computer|restart-computer)\b",           # 关机重启
+    r"\b(format-volume|clear-disk|initialize-disk)\b",   # 格式化 / 清盘
+    r"^\s*format\s+[a-z]:",                              # cmd 格式化
+    r"^\s*(iex|invoke-expression)\b",                    # iwr ... | iex 的管道右侧
+    r"\b(remove-item|ri|rm|rmdir|rd|del|erase)\b.*\s['\"]?([a-z]:[\\/]?|~[\\/]?|\$home[\\/]?|\$env:userprofile[\\/]?)\*?['\"]?\s*$",  # 删整个盘 / 用户目录
 ]
 
 
@@ -110,7 +129,7 @@ class Settings:
     home_dir: Path = field(default_factory=_home_dir)
 
     # 安全
-    confirm_tools: list[str] = field(default_factory=lambda: ["write_file", "edit_file", "bash"])
+    confirm_tools: list[str] = field(default_factory=lambda: ["write_file", "edit_file", "bash", "powershell"])
     restrict_to_project: bool = True
     bash_deny_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_BASH_DENY))
 
@@ -122,6 +141,7 @@ class Settings:
     verbose: bool = False
 
     def __post_init__(self) -> None:
+        self.confirm_tools = with_shell_group(self.confirm_tools)
         if not self.model_defaults:
             self.model_defaults = {
                 "temperature": self.temperature,
@@ -225,7 +245,7 @@ def load_settings(
         max_iterations=_get_int("MAX_ITERATIONS", 40),
         project_dir=Path(project_dir or os.getcwd()).expanduser().resolve(),
         home_dir=_home_dir(),
-        confirm_tools=_get_list("CONFIRM_TOOLS", ["write_file", "edit_file", "bash"]),
+        confirm_tools=_get_list("CONFIRM_TOOLS", ["write_file", "edit_file", "bash", "powershell"]),
         restrict_to_project=_get_bool("RESTRICT_TO_PROJECT", True),
         bash_deny_patterns=[*DEFAULT_BASH_DENY, *extra_deny],
         enable_web=_get_bool("ENABLE_WEB", False),

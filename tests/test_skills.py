@@ -10,6 +10,14 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    """Windows 没开「开发者模式」时普通用户不能建软链接，这类用例直接跳过。"""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"当前系统不能创建软链接：{exc}")
 REPO_SKILLS = sorted(
     p.parent for root in (REPO_ROOT / ".mole" / "skills", REPO_ROOT / "examples" / "skills")
     for p in root.rglob("SKILL.md")
@@ -42,7 +50,7 @@ def test_sandbox_roots_include_skill_dirs(tmp_path: Path):
     proj, home, ext = tmp_path / "proj", tmp_path / "home", tmp_path / "elsewhere" / "linked"
     ext.mkdir(parents=True)
     (home / "skills").mkdir(parents=True)
-    (home / "skills" / "linked").symlink_to(ext)
+    _symlink_or_skip(home / "skills" / "linked", ext)
     proj.mkdir()
     roots = sandbox_roots(Settings(project_dir=proj, home_dir=home))
     assert proj.resolve() in roots and (home / "workspace").resolve() in roots
@@ -73,7 +81,7 @@ async def test_skills_loaded_and_readable(tmp_path: Path):
         "---\nname: linked-demo\ndescription: 软链接进来的技能，用于测试沙箱是否包含链接目标\n---\n软链接技能正文\n",
         encoding="utf-8",
     )
-    (home / "skills" / "linked-demo").symlink_to(ext)
+    _symlink_or_skip(home / "skills" / "linked-demo", ext)
 
     settings = Settings(model="fake", api_key="k", api_base="http://127.0.0.1:9/v1",
                         project_dir=proj, home_dir=home)

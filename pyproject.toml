@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mole-agent"
-version = "0.3.1"
+version = "0.3.2"
 description = "Mole：基于 openJiuwen agent-core（DeepAgent harness）的终端编码助手"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
