@@ -155,7 +155,7 @@ class StreamRenderer:
         if not text:
             return
         if not self._in_text:
-            sys.stdout.write("\033[92m● \033[0m" if sys.stdout.isatty() else "● ")
+            console.print("●", style="bright_green", end=" ")  # 交给 rich 上色：旧版 Windows 控制台不认裸 ANSI
             self._in_text = True
         sys.stdout.write(text)
         sys.stdout.flush()
@@ -463,12 +463,7 @@ class Repl:
     async def run_interruptible(self, text: str) -> None:
         loop = asyncio.get_running_loop()
         task = asyncio.create_task(self.run_turn(text))
-        installed = False
-        try:
-            loop.add_signal_handler(signal.SIGINT, task.cancel)
-            installed = True
-        except (NotImplementedError, RuntimeError):
-            pass  # Windows：退化为 KeyboardInterrupt
+        restore = _cancel_on_sigint(loop, task)
         try:
             await task
         except asyncio.CancelledError:
@@ -482,8 +477,7 @@ class Repl:
             if self.settings.verbose:
                 console.print_exception()
         finally:
-            if installed:
-                loop.remove_signal_handler(signal.SIGINT)
+            restore()
 
     async def loop(self) -> None:
         while True:
@@ -505,6 +499,25 @@ class Repl:
             await self.run_interruptible(text)
             console.print()
         console.print("[dim]再见～[/dim]")
+
+
+def _cancel_on_sigint(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> Any:
+    """执行期间 Ctrl+C 只取消当前任务、回到输入框；返回恢复原处理方式的函数。
+
+    macOS / Linux 用事件循环的 add_signal_handler。Windows 的事件循环不支持它，而 asyncio.run
+    默认会在 Ctrl+C 时取消整个程序，所以改用 signal.signal 临时接管，任务结束后再还原。
+    """
+    try:
+        loop.add_signal_handler(signal.SIGINT, task.cancel)
+        return lambda: loop.remove_signal_handler(signal.SIGINT)
+    except (NotImplementedError, RuntimeError):
+        pass
+    try:
+        previous = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(task.cancel))
+    except ValueError:  # 不在主线程（例如被嵌入到别的程序里）：保持默认行为
+        return lambda: None
+    return lambda: signal.signal(signal.SIGINT, previous)
 
 
 def review_prompt(request: str, has_reviewer: bool) -> str:
@@ -658,6 +671,12 @@ def main() -> None:
     parser.add_argument("--check", action="store_true", help="检查配置并 ping 一次模型（可配合 -m）")
     parser.add_argument("--version", action="version", version=f"mole-agent {__version__}")
     args = parser.parse_args()
+    # Windows 上输出被重定向（管道、文件）时默认是 GBK 编码，遇到它编不了的字符会直接崩；改成替换掉
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(asyncio.run(_amain(args)))
     except KeyboardInterrupt:

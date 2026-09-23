@@ -69,6 +69,9 @@
 
 - **阻塞**：放宽默认安全策略——`restrict_to_project` 默认值、`MOLE_CONFIRM_TOOLS` 默认列表、
   删除或削弱 `DEFAULT_BASH_DENY` 规则。
+- 执行命令的工具有两个：`bash` 和（只在 Windows 上注册的）`powershell`，见 `config.SHELL_TOOLS`。
+  **阻塞**：新的安全 rail 或确认逻辑只处理了 `bash`。命令检查要用 `rails` 里的切分函数，
+  不能自己按空格或 `;` 切（单个 `&`、换行都能拼出第二条命令）。
 - 新增或修改 bash 拒绝规则时，`tests/test_offline.py` 的「应拦截」和「应放行」两张用例表都要补用例
   （防止误拦正常命令，例如 `make -f Makefile`、`rm -rf build/`）。
 - **阻塞**：API key 出现在 `models.toml`、日志、审计日志、异常信息或终端输出里。key 只能来自环境变量 / `.env`。

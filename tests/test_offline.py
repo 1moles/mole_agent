@@ -134,7 +134,8 @@ def test_load_settings_from_env(monkeypatch, project: Path, tmp_path: Path):
     monkeypatch.setenv("MOLE_CONFIRM_TOOLS", "bash")
     monkeypatch.setenv("MOLE_EXTRA_BASH_DENY", r"\bkubectl\s+delete\b;;\bterraform\s+destroy\b")
     s = load_settings(project)
-    assert s.model == "m1" and s.model_spec == "default/m1" and s.confirm_tools == ["bash"]
+    assert s.model == "m1" and s.model_spec == "default/m1"
+    assert s.confirm_tools == ["bash", "powershell"]   # 命令类工具成组确认：只写 bash，Windows 上的 powershell 也要确认
     assert s.bash_deny_patterns[-2:] == [r"\bkubectl\s+delete\b", r"\bterraform\s+destroy\b"]
     assert s.validate() == []
 
@@ -165,4 +166,4 @@ def test_build_agent(project: Path, tmp_path: Path):
     pending = [type(r) for r in bundle.agent._pending_rails]
     assert {ApprovalRail, CommandGuardRail, ToolTraceRail} <= set(pending)
     assert CommandGuardRail.priority > ApprovalRail.priority > ToolTraceRail.priority
-    assert bundle.approval is not None and bundle.approval.get_tools() == {"write_file", "edit_file", "bash"}
+    assert bundle.approval is not None and bundle.approval.get_tools() == {"write_file", "edit_file", "bash", "powershell"}

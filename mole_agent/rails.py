@@ -12,11 +12,13 @@ before/after_tool_call 等），priority 越大越先执行。这里演示几类
 - TokenUsageRail：统计 token 用量。
 
 before_tool_call 执行顺序：CommandGuardRail(95) → ApprovalRail(90) → ToolTraceRail(5)
+命令类工具（SHELL_TOOLS）：bash，以及 Windows 上的 powershell，安全 rail 对两者同样生效。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -28,6 +30,8 @@ from openjiuwen.core.session.stream.base import OutputSchema
 from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.harness.rails import BaseInterruptRail, ConfirmInterruptRail
 from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
+
+from mole_agent.config import SHELL_TOOLS
 
 # rail 之间通过 ctx.extra 通信：记录被驳回的调用，供 ToolTraceRail 标记和审计
 _REJECTED_KEY = "mole_rejected_calls"
@@ -44,15 +48,24 @@ def _mark_rejected(ctx: Any, tool_call: Any, by: str) -> None:
 
 # 与 SDK BashTool 相同的子命令切分方式：按 || && ; | 切开
 _SHELL_OPERATOR_RE = re.compile(r"\s*(?:\|\||&&|[;|])\s*")
+# 更严格的切分：再加上单个 &（bash 后台执行、cmd 的命令分隔符）和换行（多行命令）。
+# 只用 SDK 的切法，`ls & sudo x`、`ls<换行>rm -rf x` 里的第二条命令会被漏检。
+_STRICT_OPERATOR_RE = re.compile(r"\s*(?:\|\||&&|[;|&\r\n])\s*")
 
 
 def split_shell_command(command: str) -> list[str]:
     return [part.strip() for part in _SHELL_OPERATOR_RE.split(command) if part.strip()]
 
 
+def _strict_segments(command: str) -> list[str]:
+    return [part.strip() for part in _STRICT_OPERATOR_RE.split(command) if part.strip()]
+
+
 def match_deny_rule(command: str, patterns: list[re.Pattern[str]]) -> Optional[str]:
-    """返回命中的规则；未命中返回 None。逐个子命令检查（与 SDK BashTool 语义一致）。"""
-    for segment in split_shell_command(command):
+    """返回命中的规则；未命中返回 None。逐个子命令检查：SDK 的切法和更严格的切法各查一遍，只会多拦不会少拦。"""
+    segments = split_shell_command(command)
+    segments += [s for s in _strict_segments(command) if s not in segments]
+    for segment in segments:
         for pattern in patterns:
             if pattern.search(segment):
                 return pattern.pattern
@@ -68,7 +81,7 @@ class CommandGuardRail(BaseInterruptRail):
 
     priority = 95  # 高于 ApprovalRail：已经注定被拒的命令不必再问用户
 
-    def __init__(self, deny_patterns: Iterable[str], tool_names: Iterable[str] = ("bash",)) -> None:
+    def __init__(self, deny_patterns: Iterable[str], tool_names: Iterable[str] = SHELL_TOOLS) -> None:
         super().__init__(tool_names=tool_names)
         self._patterns = [re.compile(p, re.IGNORECASE) for p in deny_patterns]
 
@@ -273,6 +286,7 @@ class TokenUsageRail(AgentRail):
 _READ_ONLY_COMMANDS = {
     "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "find", "pwd", "echo",
     "file", "stat", "du", "sort", "cut", "diff", "which", "basename", "dirname",
+    "dir", "type", "tree", "where", "findstr",  # Windows cmd / PowerShell 里的只读命令
 }
 # 白名单命令里个别参数也能写文件或执行其他程序，单独拦掉
 _WRITE_OR_EXEC_FLAGS = {
@@ -286,11 +300,27 @@ _READ_ONLY_GIT_SUBCOMMANDS = {
 }
 _GIT_BRANCH_WRITE_FLAGS = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--set-upstream-to", "-u"}
 _GIT_WRITE_OR_EXEC_FLAGS = ("--output", "-O", "--open-files-in-pager", "--ext-diff")
-_HARMLESS_REDIRECTS = ("&>/dev/null", "2>/dev/null", ">/dev/null", "2>&1")
+_HARMLESS_REDIRECTS = (
+    "&>/dev/null", "2>/dev/null", ">/dev/null", "2>&1",   # POSIX
+    "2>nul", "2>NUL", ">nul", ">NUL", "2>$null",          # Windows cmd / PowerShell
+)
 
 
-def read_only_violation(command: str) -> Optional[str]:
-    """返回命令不是只读的原因；是只读命令时返回 None。宁可误拒，不可误放。"""
+_SINGLE_AMP_RE = re.compile(r"(?<!&)&(?!&)")
+
+
+def _command_name(word: str) -> str:
+    """/usr/bin/git、C:\\Git\\bin\\git.exe、GIT → git（Windows 上命令名不区分大小写）。"""
+    name = re.split(r"[\\/]", word)[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def read_only_violation(command: str, *, windows: bool = False) -> Optional[str]:
+    """返回命令不是只读的原因；是只读命令时返回 None。宁可误拒，不可误放。
+
+    windows=True：命令可能交给 PowerShell / cmd 执行（Windows 上 bash 工具会按命令自动选择），
+    额外拒绝括号和花括号——PowerShell 里 (...) / {...} 会执行其中的命令。
+    """
     text = command.strip()
     if not text:
         return "空命令"
@@ -299,13 +329,17 @@ def read_only_violation(command: str) -> Optional[str]:
     for token, why in ((">", "输出重定向会写文件"), ("`", "命令替换"), ("$(", "命令替换"), ("<(", "进程替换")):
         if token in text:
             return why
-    for segment in split_shell_command(text):
+    if _SINGLE_AMP_RE.search(text):  # && 可以；单个 & 在 bash 里是后台执行，在 cmd 里是命令分隔符
+        return "单个 & 会在后台或另起一条命令执行"
+    if windows and any(ch in text for ch in "(){}"):
+        return "Windows 上命令可能由 PowerShell 执行，括号里的内容会被当成命令运行"
+    for segment in _strict_segments(text):  # 换行也算命令分隔
         words = segment.split()
         if not words:
             continue
         if "=" in words[0]:
             return f"不允许设置环境变量：{words[0]}"
-        base = words[0].rsplit("/", 1)[-1]
+        base = _command_name(words[0])
         if base == "git":
             args = words[1:]
             while args and args[0] in {"-C", "--no-pager"}:  # 跳过全局选项（-c 可改配置，不放行）
@@ -327,26 +361,37 @@ def read_only_violation(command: str) -> Optional[str]:
 
 
 class ReadOnlyShellRail(BaseInterruptRail):
-    """只读子 agent 的 bash 守卫：只放行白名单里的只读命令，其余直接驳回。
+    """只读子 agent 的命令守卫：只放行白名单里的只读命令，其余直接驳回。
 
     子 agent 由 task_tool 在内部运行，它触发的人工确认不会传到用户终端（openjiuwen 0.1.18），
-    所以子 agent 不挂 ApprovalRail，而是用这个 rail 把 bash 限制成只读。
+    所以子 agent 不挂 ApprovalRail，而是用这个 rail 把命令限制成只读：
+    - bash：按白名单检查；显式指定 shell_type=powershell / cmd 的一律拒绝
+    - powershell（只在 Windows 上注册）：一律拒绝，PowerShell 语法太灵活，没法可靠地判断只读
     """
 
     priority = 95  # 与 CommandGuardRail 同级：先于任何可能执行的环节
 
-    def __init__(self, tool_names: Iterable[str] = ("bash",)) -> None:
+    def __init__(self, tool_names: Iterable[str] = SHELL_TOOLS, *, windows: Optional[bool] = None) -> None:
         super().__init__(tool_names=tool_names)
+        self._windows = (os.name == "nt") if windows is None else windows
 
-    async def resolve_interrupt(self, ctx, tool_call, user_input, auto_confirm_config=None):
-        args = getattr(ctx.inputs, "tool_args", None)
+    def violation(self, tool_name: str, args: Any) -> Optional[str]:
         if isinstance(args, str):
             try:
                 args = json.loads(args)
             except (json.JSONDecodeError, TypeError):
                 args = {"command": args}
-        command = str((args or {}).get("command", "")) if isinstance(args, dict) else ""
-        reason = read_only_violation(command)
+        args = args if isinstance(args, dict) else {}
+        if tool_name != "bash":
+            return f"只读子 agent 不能使用 {tool_name}"
+        shell = str(args.get("shell_type") or "auto").lower()
+        if shell not in {"auto", "bash", "sh"}:
+            return f"只读子 agent 不能指定 shell_type={shell}"
+        return read_only_violation(str(args.get("command", "")), windows=self._windows)
+
+    async def resolve_interrupt(self, ctx, tool_call, user_input, auto_confirm_config=None):
+        name = getattr(tool_call, "name", "") or getattr(ctx.inputs, "tool_name", "") or "bash"
+        reason = self.violation(name, getattr(ctx.inputs, "tool_args", None))
         if reason is None:
             return self.approve()
         _mark_rejected(ctx, tool_call, "guard")
