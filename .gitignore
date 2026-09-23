@@ -8,3 +8,8 @@ build/
 dist/
 .pytest_cache/
 logs/
+.idea/
+*.secret
+*password*
+*token*
+node_modules/
