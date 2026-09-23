@@ -126,6 +126,11 @@ models = ["<部署的模型名>"]
 - `mole --check` 会显示用的是哪种鉴权、带了哪些请求头（只显示名字，不显示取值）。
 - `/models` 在线查询用同样的请求头。
 
+**只接受流式请求的模型**（要求请求里 `stream=true`）：在供应商下加 `stream_only = true`。agent 对话本来就是流式的，
+打开后 SDK 里其余的非流式调用（任务完成判断、上下文压缩、`mole --check` 等）也改为流式请求、在本地拼成完整回复。
+不要自己往 `ModelRequestConfig` 里加 `stream=True`：它会被原样塞进非流式调用的请求参数，
+报 `'AsyncStream' object has no attribute 'choices'`。
+
 三种写法指定模型，`-m` 和 `/model` 通用：
 
 | 写法 | 含义 |
@@ -286,6 +291,8 @@ pytest -q        # 不联网、不需要 API key
 - `tests/test_offline.py`：自定义工具的行为、命令拒绝规则、提示词、配置、MCP 解析、agent 组装
 - `tests/test_tools.py`：tools/ 目录约定——自动发现、文件名即工具名、模板可用、写错时的报错
 - `tests/test_models.py`：models.toml 解析、模型选择规则、启动优先级、供应商级参数覆盖
+- `tests/test_stream_only.py`：起一个拒绝非流式请求的假网关，确认 `stream_only` 下 `--check`、带解析器的调用、
+  工具调用都能通过流式拼接得到完整结果
 - `tests/test_windows.py`：powershell 同样受确认 / 拦截 / 只读守卫约束，Windows 危险命令用例表，
   `&` 和换行不能绕过命令检查，事件循环不支持信号处理时 Ctrl+C 只打断当前任务
 - `tests/test_header_auth.py`：请求头鉴权的解析与校验；起一个本地假服务，确认对话、流式、`--check`、`/models`

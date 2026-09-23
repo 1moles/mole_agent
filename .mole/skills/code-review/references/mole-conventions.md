@@ -20,6 +20,8 @@
 - 要兼容 PyPI 发布版 0.1.18.x。开发分支才有的接口不能用（例如
   `openjiuwen.core.single_agent.ability_manager.resolve_tool_result_text`）。不确定时查
   `.venv/lib/python3.*/site-packages/openjiuwen/` 里的源码。
+- 模型请求参数不要直接塞进 `ModelRequestConfig`：额外字段会原样进入每个请求。尤其不能加 `stream=True`，
+  非流式调用会报 `'AsyncStream' object has no attribute 'choices'`；只接受流式的网关用 `stream_only`（`StreamOnlyModel`）。
 - SDK 的已知缺陷要在代码里注释原因，例如 `pyproject.toml` 里显式依赖 `opentelemetry-sdk`、
   bash 拒绝规则由 `CommandGuardRail` 执行（SDK 的 `deny_patterns` 只在 `OPENJIUWEN_BASH_STRICT=1` 时生效）。
 
