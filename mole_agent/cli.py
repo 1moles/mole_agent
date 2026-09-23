@@ -29,9 +29,11 @@ from mole_agent.config import Settings, load_settings
 from mole_agent.models import ModelChoice, ModelSelectionError, list_remote_models, save_last_model
 
 from mole_agent.commands import (
-    default_registry, CommandContext, CompletionItem, Message, AgentPrompt, Exit,
+    default_registry, CommandContext, CompletionItem, Message, AgentPrompt, Exit, Help,
     dispatch, SlashCompleter, command_key_bindings,
 )
+
+from mole_agent.commands.help import render_help
 
 console = Console(highlight=False)
 
@@ -415,6 +417,9 @@ class Repl:
 
     async def handle_slash(self, text: str) -> str | None:
         result = await dispatch(self.commands, self.command_context(), text)
+        if isinstance(result, Help):
+            console.print(render_help(result))
+            return None
         if isinstance(result, Exit):
             raise EOFError
         if isinstance(result, AgentPrompt):

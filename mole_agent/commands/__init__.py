@@ -1,6 +1,7 @@
-from .types import CommandSpec, CommandContext, CompletionItem, Message, AgentPrompt, Exit
+from .types import CommandSpec, CommandContext, CompletionItem, Message, AgentPrompt, Exit, Help
 from .registry import CommandRegistry
 from .dispatcher import dispatch
+from .help import build_help
 from .completion import SlashCompleter, command_key_bindings
 
 
@@ -10,7 +11,7 @@ def default_registry():
     async def help_command(ctx, args):
         if args:
             return Message("用法：/help")
-        return Message(registry.help_text())
+        return build_help(registry)
 
     registry.register(CommandSpec("help", "显示帮助", help_command))
     definitions = [
@@ -35,5 +36,10 @@ def default_registry():
         registry.register(CommandSpec(
             name, description, handler, f"/{name}" + (f" {usage}" if usage else ""),
             aliases, complete if name in {"model", "models"} else None,
+            examples=(
+                ("/review", "检视当前未提交的改动"),
+                ("/review 提交 a1b2c3d", "检视指定提交"),
+                ("/review 和 main 比", "与指定分支比较"),
+            ) if name == "review" else (),
         ))
     return registry

@@ -23,7 +23,8 @@ def test_registration_completion_help_and_dispatch():
     items = list(completer.get_completions(Document('/f'), CompleteEvent()))
     assert [c.text for c in items] == ['/foo']
     assert not calls
-    assert '/foo' in registry.help_text()
+    from mole_agent.commands.help import build_help, render_help
+    assert '/foo' in render_help(build_help(registry)).plain
     result = asyncio.run(dispatch(registry, 'current', '/f  hello "world"'))
     assert result.text == 'hello "world"'
     assert calls == [('current', 'hello "world"')]
@@ -159,3 +160,36 @@ def test_escape_preserves_input():
             pipe.send_text('\r')
             assert await asyncio.wait_for(task, 2) == '/mo'
     asyncio.run(scenario())
+
+
+def test_help_keeps_guidance_and_registered_examples():
+    from mole_agent.commands import CommandSpec, Message, default_registry, dispatch
+    registry = default_registry()
+    async def handler(ctx, args):
+        return Message('')
+    assert 'examples' in CommandSpec.__dataclass_fields__, 'missing per-command examples'
+    registry.register(CommandSpec('demo', '[bold]普通说明', handler,
+                                  examples=(('/demo value', '自定义示例'),)))
+    from mole_agent.commands.help import render_help
+    result = asyncio.run(dispatch(registry, None, '/help'))
+    rendered = render_help(result)
+    for text in ('/demo', '[bold]普通说明', '/demo value', '自定义示例',
+                 '/review 提交 a1b2c3d', '/review 和 main 比',
+                 'MOLE.md', 'AGENTS.md', 'CLAUDE.md', '│', 'explore_agent',
+                 'code_reviewer', 'Ctrl+C', 'Ctrl+D', 'Tab', 'Esc'):
+        assert text in rendered.plain
+    assert any(span.style == 'bold' for span in rendered.spans)
+
+
+def test_help_is_rendered_by_cli(tmp_path, monkeypatch):
+    from io import StringIO
+    from types import SimpleNamespace
+    from rich.console import Console
+    from mole_agent import cli
+    from mole_agent.config import Settings
+    output = StringIO()
+    monkeypatch.setattr(cli, 'console', Console(file=output, width=120))
+    repl = cli.Repl(Settings(home_dir=tmp_path), SimpleNamespace())
+    assert asyncio.run(repl.handle_slash('/help')) is None
+    assert 'MOLE.md' in output.getvalue()
+    assert '/review 和 main 比' in output.getvalue()
