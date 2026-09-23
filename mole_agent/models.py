@@ -65,6 +65,7 @@ class ProviderConfig:
     temperature: Optional[float] = None
     headers: dict[str, str] = field(default_factory=dict)   # 原样保存，值里可以有 ${VAR}
     auth: str = "api_key"                                    # 见 AUTH_MODES
+    stream_only: bool = False                                # 网关只接受 stream=true 的请求
 
     @property
     def resolved_api_key(self) -> str:
@@ -205,7 +206,17 @@ def _parse_provider(name: str, raw: dict[str, Any]) -> ProviderConfig:
         temperature=raw.get("temperature"),
         headers={str(k): str(v) for k, v in headers.items()},
         auth=auth,
+        # 也接受 stream = true 的写法（内部模型文档里常这么写）
+        stream_only=_parse_bool(name, "stream_only", raw.get("stream_only", raw.get("stream", False))),
     )
+
+
+def _parse_bool(provider: str, key: str, value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    raise ModelSelectionError(f"models.toml 中供应商 {provider} 的 {key} 应为 true 或 false，当前为 {value!r}")
 
 
 def load_catalog(paths: list[Path]) -> ModelCatalog:

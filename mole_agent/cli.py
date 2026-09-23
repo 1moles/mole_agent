@@ -613,6 +613,8 @@ async def _check(settings: Settings) -> int:
 
     console.print(f"模型：{settings.model_spec} @ {settings.api_base} ({settings.provider})", markup=False)
     console.print(f"鉴权：{describe_auth(settings)}", markup=False)
+    if settings.stream_only:
+        console.print("调用：只走流式（stream_only = true，非流式调用在本地拼接）", markup=False)
     try:
         reply = await build_model(settings).invoke([{"role": "user", "content": "只回复两个字：你好"}])
     except Exception as exc:  # noqa: BLE001

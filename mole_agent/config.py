@@ -113,6 +113,7 @@ class Settings:
     verify_ssl: bool = True
     custom_headers: dict[str, str] = field(default_factory=dict)   # 已把 ${VAR} 换成实际值
     auth: str = "api_key"             # api_key / headers / none，见 models.AUTH_MODES
+    stream_only: bool = False         # 所有模型调用都走流式（网关只接受 stream=true）
     provider_name: str = ""           # models.toml 里的供应商名
     catalog: ModelCatalog = field(default_factory=ModelCatalog)
     model_error: str = ""
@@ -164,6 +165,7 @@ class Settings:
         self.api_key = p.resolved_api_key if p.auth != "none" else ""
         self.custom_headers = p.resolved_headers
         self.auth = p.auth
+        self.stream_only = p.stream_only
         self.temperature = p.temperature if p.temperature is not None else d.get("temperature")
         self.max_tokens = int(p.max_tokens if p.max_tokens is not None else d.get("max_tokens") or 8192)
         self.timeout = float(p.timeout if p.timeout is not None else d.get("timeout") or 120.0)

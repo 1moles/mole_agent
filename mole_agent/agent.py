@@ -17,7 +17,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from openjiuwen.core.foundation.llm import LLMAuthMode, Model, ModelClientConfig, ModelRequestConfig
+from openjiuwen.core.foundation.llm import (
+    AssistantMessage,
+    AssistantMessageChunk,
+    LLMAuthMode,
+    Model,
+    ModelClientConfig,
+    ModelRequestConfig,
+)
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
@@ -48,12 +55,41 @@ class AgentBundle:
     warnings: list[str] = field(default_factory=list)
 
 
+class StreamOnlyModel(Model):
+    """给只接受流式请求（stream=true）的模型网关用：invoke 也走流式，在本地把分片拼成完整回复。
+
+    agent 主循环本来就用 stream()；但 SDK 里还有不少地方用 invoke()（任务完成判断、上下文压缩、
+    图片能力探测，以及 mole --check），非流式请求会被这类网关拒绝。
+    注意不要把 stream=True 写进 ModelRequestConfig：它会被原样塞进 invoke 的请求参数，
+    OpenAI SDK 于是返回流对象，而 invoke 按完整回复去解析，报 'AsyncStream' object has no attribute 'choices'。
+    """
+
+    async def invoke(self, messages, *, output_parser=None, **kwargs) -> AssistantMessage:
+        merged: Optional[AssistantMessageChunk] = None
+        async for chunk in self.stream(messages, **kwargs):
+            if isinstance(chunk, AssistantMessageChunk):
+                merged = chunk if merged is None else merged + chunk
+        if merged is None:
+            return AssistantMessage(content="", tool_calls=[])
+        fields = {k: getattr(merged, k) for k in AssistantMessage.model_fields if hasattr(merged, k)}
+        fields["tool_calls"] = merged.tool_calls or []
+        if "parser_content" in AssistantMessage.model_fields:
+            fields["parser_content"] = None
+        message = AssistantMessage(**fields)
+        if output_parser is not None and message.content:
+            try:  # 与 SDK 非流式 invoke 一致：解析失败时 parser_content 为 None
+                message.parser_content = await output_parser.parse(message.content)
+            except Exception:  # noqa: BLE001
+                log.warning("流式拼接后的回复解析失败（output_parser=%s）", output_parser)
+        return message
+
+
 # models.toml 的 auth → openjiuwen 的鉴权方式；api_key 是 SDK 默认值，不显式传
 _AUTH_MODES = {"headers": LLMAuthMode.CustomHeaders, "none": LLMAuthMode.NoneAuth}
 
 
 def build_model(settings: Settings):
-    """等价于 init_model(...)，多支持一个鉴权方式。
+    """等价于 init_model(...)，多支持鉴权方式和「只走流式」两个选项。
 
     init_model 没有 auth_mode 参数，请求头鉴权（auth = "headers"）要直接构造 ModelClientConfig：
     auth_mode=custom_headers 且没有 key 时，SDK 不发 Authorization，只发 custom_headers。
@@ -69,7 +105,8 @@ def build_model(settings: Settings):
     )
     if settings.auth in _AUTH_MODES:
         client_kwargs["auth_mode"] = _AUTH_MODES[settings.auth]
-    return Model(
+    model_cls = StreamOnlyModel if settings.stream_only else Model
+    return model_cls(
         model_client_config=ModelClientConfig(**client_kwargs),
         model_config=ModelRequestConfig(
             model=settings.model,
