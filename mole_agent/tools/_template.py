@@ -5,6 +5,7 @@
 
 检查清单：
 - create(settings) 返回 Tool；需要按配置开关时再加 enabled(settings) -> bool
+- 工具不写文件、不改状态时加 READ_ONLY = True，只读子 agent（explore_agent、code_reviewer）才会拿到它
 - description 写清「做什么 + 什么时候该用」，只读工具在开头注明「只读」
 - 参数写进 input_params 的 JSON Schema，并给默认值和说明
 - 阻塞 IO（读文件、子进程、网络）放进 asyncio.to_thread；子进程必须带 timeout
@@ -23,6 +24,7 @@ from openjiuwen.core.foundation.tool import Tool, tool
 from mole_agent.config import Settings
 from mole_agent.tools._common import resolve_inside, truncate
 
+READ_ONLY = True  # 只统计行数，不改任何东西
 MAX_OUTPUT_CHARS = 4_000
 
 

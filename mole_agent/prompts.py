@@ -77,7 +77,21 @@ def load_project_memory(project_dir: Path) -> tuple[str, str] | None:
     return None
 
 
-def build_system_prompt(settings: Settings) -> str:
+_SUBAGENTS_CN = """\
+## 子代理（task_tool）
+- 可用：{names}（用途见 task_tool 的说明）。大范围搜索、代码检视这类要读很多文件的工作交给它们：
+  它们在独立上下文里执行，只把结论交回来，能节省主对话的上下文。
+- 子代理都是只读的，不能修改文件、不能运行测试；它们建议的修改和验证由你来执行（照常需要用户确认）。
+- 把子代理的报告如实转述给用户，不要删改其中的问题和结论。"""
+
+_SUBAGENTS_EN = """\
+## Subagents (task_tool)
+- Available: {names} (see the task_tool description). Delegate wide searches and code reviews to them: they run in a separate context and return only their conclusions, which saves context here.
+- Subagents are read-only: they cannot edit files or run tests. You carry out the changes and checks they suggest (with the usual user confirmation).
+- Relay their reports to the user faithfully; do not drop findings or change the verdict."""
+
+
+def build_system_prompt(settings: Settings, subagents: list[str] | None = None) -> str:
     cn = settings.language == "cn"
     persona = (_PERSONA_CN if cn else _PERSONA_EN).format(name=settings.agent_name)
 
@@ -98,6 +112,8 @@ def build_system_prompt(settings: Settings) -> str:
         )
 
     parts = [persona, "\n".join(env_lines)]
+    if subagents:
+        parts.append((_SUBAGENTS_CN if cn else _SUBAGENTS_EN).format(names="、".join(subagents) if cn else ", ".join(subagents)))
 
     memory = load_project_memory(settings.project_dir)
     if memory:

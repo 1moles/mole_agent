@@ -12,6 +12,7 @@ from openjiuwen.core.foundation.tool import Tool, tool
 from mole_agent.config import Settings
 from mole_agent.tools._common import resolve_inside
 
+READ_ONLY = True  # 只读子 agent 也能用
 SKIP_DIRS = {
     ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "env", "__pycache__",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", "dist", "build", "target",

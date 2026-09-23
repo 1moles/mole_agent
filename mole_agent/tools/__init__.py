@@ -7,6 +7,8 @@ SysOperationRail 已经提供 read_file / write_file / edit_file / glob / grep /
 每个工具模块的约定：
     create(settings) -> Tool          必须：创建工具实例
     enabled(settings) -> bool         可选：返回 False 时本次不注册（例如依赖某项配置）
+    READ_ONLY = True                  可选：声明工具不改任何东西，只读子 agent（subagents/）也会拿到它；
+                                      不写就只给主 agent（主 agent 的写操作有人工确认兜底，子 agent 没有）
 以下划线开头的模块（`_common.py`、`_template.py`）不会被当成工具加载。
 """
 
@@ -41,11 +43,14 @@ def discover_tool_modules() -> list[ModuleType]:
     return modules
 
 
-def build_custom_tools(settings: Settings) -> list[Tool]:
+def build_custom_tools(settings: Settings, *, read_only: bool = False) -> list[Tool]:
+    """read_only=True 时只返回声明了 READ_ONLY = True 的工具（给只读子 agent 用）。"""
     tools: list[Tool] = []
     names: dict[str, str] = {}
     for module in discover_tool_modules():
         file = module.__name__.rsplit(".", 1)[-1]
+        if read_only and getattr(module, "READ_ONLY", False) is not True:
+            continue
         enabled = getattr(module, "enabled", None)
         if callable(enabled) and not enabled(settings):
             continue

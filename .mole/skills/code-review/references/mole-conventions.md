@@ -5,7 +5,8 @@
 ## 分层与依赖
 
 - 模块职责：`config.py` 配置 → `models.py` 供应商/模型目录 → `prompts.py` 系统提示词 →
-  `tools/` 自定义工具 → `rails.py` 自定义 rails → `agent.py` 组装 DeepAgent → `cli.py` 终端交互。
+  `tools/` 自定义工具 → `rails.py` 自定义 rails → `subagents/` 子 agent → `agent.py` 组装 DeepAgent →
+  `cli.py` 终端交互。
   新代码放进职责对应的模块，不要在 `cli.py` 里写业务逻辑。
 - `config.py`、`models.py`、`prompts.py` 不在模块顶层 import `openjiuwen`；`cli.py` 只在函数内部
   import SDK。这样 `mole --help`、`--list-models` 和配置报错不需要加载整个 SDK。
@@ -25,7 +26,8 @@
 ## Rails
 
 - 每个 rail 都要显式定义 `priority`，并在注释里说明为什么排在谁前后。当前顺序：
-  `CommandGuardRail(95) > ApprovalRail(90) > TokenUsageRail(10) > ToolTraceRail(5)`。
+  `CommandGuardRail(95) > ApprovalRail(90) > TokenUsageRail(10) > ToolTraceRail(5)`；
+  子 agent 用 `ReadOnlyShellRail(95)` 代替 `CommandGuardRail` + `ApprovalRail`。
 - `DeepAgentRail` 子类的 `__init__` 必须调用 `super().__init__()`。
 - 拦截工具调用用 `BaseInterruptRail.resolve_interrupt` 返回 `approve()` / `reject()` / `interrupt()`，
   不要在钩子里直接抛异常或手改 `ctx.extra["_skip_tool"]`。
@@ -45,7 +47,23 @@
 - 阻塞 IO（文件遍历、子进程）放进 `asyncio.to_thread`，不能直接在协程里跑。
 - 路径参数必须经过 `_common.resolve_inside` 限制在项目目录内。**阻塞**：能读写项目外路径的工具。
 - 只读工具不得有任何写操作；输出要设上限，用 `_common.truncate` 截断并提示。
+- 模块级 `READ_ONLY = True` 表示工具不改任何东西，只读子 agent 也会拿到它。**阻塞**：会写文件、
+  改 git 状态或调用外部服务的工具声明了 `READ_ONLY = True`（子 agent 没有人工确认兜底）。
 - `subprocess` 必须带 `timeout`，用参数列表而不是 `shell=True` 拼字符串。
+
+## 子 agent（`mole_agent/subagents/`）
+
+- 一个子 agent 一个文件：`subagents/<子agent名>.py`，文件名与 `agent_card.name` 一致；提供
+  `create(env: SubagentEnv) -> SubAgentConfig`，可选 `enabled(settings)`。靠自动发现注册，不要在 `agent.py` 里手工加。
+- SDK 已有的子 agent 直接用它的构建函数（如 `build_explore_agent_config`），不要复制它的提示词。
+- **阻塞**：子 agent 挂 `ApprovalRail` / `AskUserRail`，或拿到写文件工具（`SysOperationRail` 必须 `read_only=True`）。
+  task_tool 内部运行子 agent，中断不会传到终端（openjiuwen 0.1.18），会卡住或绕过确认。
+- rails 统一从 `SubagentEnv.read_only_rails()` 取，保证只读 shell、审计（`agent` 字段）、终端进度和 token 统计一致；
+  新加的 rail 用 `per_instance` 包装，让每个子 agent 实例各用一份（`TokenUsageRail` 故意共用）。
+- `workspace` 和 `sys_operation` 要一起传（`env.workspace(name)` + `env.sys_operation`）：SDK 只有两者都设置时
+  才采用 `sys_operation`，否则子 agent 会另建默认沙箱，读不到技能目录。
+- 模型走 `env.model_for(name)`（models.toml 的 `[subagents]`）；返回 `None` 表示跟随主 agent 当前模型，不要自己 `init_model`。
+- `agent_card.description` 写清「什么时候派给它、task_description 该写什么」，主 agent 靠它决定何时派活。
 
 ## 安全
 
@@ -54,6 +72,9 @@
 - 新增或修改 bash 拒绝规则时，`tests/test_offline.py` 的「应拦截」和「应放行」两张用例表都要补用例
   （防止误拦正常命令，例如 `make -f Makefile`、`rm -rf build/`）。
 - **阻塞**：API key 出现在 `models.toml`、日志、审计日志、异常信息或终端输出里。key 只能来自环境变量 / `.env`。
+  请求头鉴权的 token 同理：`models.toml` 里用 `${VAR}` 引用，终端只显示请求头的名字（`cli.describe_auth`），不显示取值。
+- 鉴权方式走 `ProviderConfig.auth`（`api_key` / `headers` / `none`）→ `build_model` 里的 `auth_mode`；
+  不要为某个厂商在别处硬编码请求头或绕过 `init_model` 的等价参数（`max_retries` 等要与 `init_model` 保持一致）。
 - 审计日志（`audit.jsonl`）里的工具结果要截断（`result_preview`）。
 
 ## 终端输出（`cli.py`）

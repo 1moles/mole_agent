@@ -35,7 +35,8 @@ cd ~/code/your-project && mole
 常用参数：`-m 供应商/模型`（指定模型）、`-p "解释一下这个仓库"`（单次执行）、`--project DIR`、
 `-y`（全部自动执行，慎用）、`-v`（显示思考过程）、`--list-models`。
 
-REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [补充要求]` 检视未提交改动，
+REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
+（默认未提交改动，也可以 `/review 提交 a1b2c3d`、`/review 和 main 比`），
 `/new` 新会话，`/usage` token 用量，`/help`，`/exit`；`Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
 
 ## 选择供应商和模型
@@ -57,6 +58,29 @@ models = ["deepseek-flash", "deepseek-v4-pro"]   # 常用模型，/model 里按�
 OpenRouter、OpenAI、Anthropic，以及公司内部 OpenAI 兼容网关的写法（自定义请求头、自签证书）。
 供应商级还可以单独设 `temperature` / `max_tokens` / `timeout` / `verify_ssl` / `headers`。
 
+**不用 API key、靠请求头鉴权**（如 ModelArts 在线服务的 `X-Auth-Token` / `X-Apig-AppCode`）：写 `auth = "headers"`，
+请求头的值用 `${环境变量}` 引用，真正的 token 放 `.env`：
+
+```toml
+[providers.modelarts]
+client_provider = "ModelArts"
+api_base = "https://<在线服务调用地址>/v1"
+auth = "headers"                                      # 不发 Authorization，只发下面的请求头
+headers = { "X-Auth-Token" = "${MODELARTS_TOKEN}" }   # .env 里写 MODELARTS_TOKEN=...
+models = ["<部署的模型名>"]
+```
+
+| `auth` | 发送的鉴权信息 |
+|---|---|
+| `api_key`（默认） | `Authorization: Bearer <key>`，`headers` 作为附加请求头 |
+| `headers` | 只发 `headers`；只配了 `headers`、没配任何 key 时自动按这种方式处理 |
+| `none` | 不鉴权（本地 vLLM、不校验的内部网关） |
+
+- 变量没设置时，该供应商不会出现在 `/model` 的编号里，列表末尾会提示缺哪个变量。
+- `Authorization` 不能写进 `headers`（openjiuwen 会丢弃它），Bearer 鉴权请用 `api_key_env`。
+- `mole --check` 会显示用的是哪种鉴权、带了哪些请求头（只显示名字，不显示取值）。
+- `/models` 在线查询用同样的请求头。
+
 三种写法指定模型，`-m` 和 `/model` 通用：
 
 | 写法 | 含义 |
@@ -69,6 +93,8 @@ OpenRouter、OpenAI、Anthropic，以及公司内部 OpenAI 兼容网关的写�
 - REPL 里 `/model` 切换**不重建 agent**，对话上下文、工具、「总是允许」记录都保留；
   上下文压缩仍使用启动时的模型。
 - 没配 key 的供应商不会出现在 `/model` 的编号里，列表末尾会提示要设置哪个环境变量。
+- 子 agent 默认跟随主 agent 当前模型；想单独指定（比如检视用更强的模型）就在 `models.toml` 里加
+  `[subagents]` 表，例如 `code_reviewer = "deepseek/deepseek-v4-pro"`，见 `models.example.toml`。
 - `.env` 里旧的单模型写法（`MOLE_PROVIDER` / `MOLE_API_BASE` / `MOLE_API_KEY` / `MOLE_MODEL`）仍然有效，
   会以 `default` 供应商出现在列表里；没有 `models.toml` 时它就是默认模型。
 
@@ -80,7 +106,8 @@ OpenRouter、OpenAI、Anthropic，以及公司内部 OpenAI 兼容网关的写�
 │ agent.py    组装：模型 + 提示词 + 工具 + rails + MCP → create_deep_agent   │
 │ prompts.py  人设 + 工作准则 + 运行环境 + 项目记忆（MOLE.md/AGENTS.md…）    │
 │ tools/      自定义工具，每个工具一个文件，启动时自动发现                  │
-│ rails.py    CommandGuardRail / ApprovalRail / ToolTraceRail / TokenUsage │
+│ subagents/  子 agent，每个一个文件：explore_agent、code_reviewer          │
+│ rails.py    CommandGuard / Approval / ReadOnlyShell / ToolTrace / Usage   │
 │ models.py   models.toml → 供应商/模型目录、选择规则、在线查询 /models      │
 │ config.py   MOLE_* 环境变量 + 选中的模型 → Settings                       │
 └──────────────────────────────────┬───────────────────────────────────────┘
@@ -106,6 +133,19 @@ OpenRouter、OpenAI、Anthropic，以及公司内部 OpenAI 兼容网关的写�
   → ToolTraceRail          输出 ⎿ 结果摘要，写审计日志 ~/.mole-agent/audit.jsonl
 ```
 
+主 agent 通过 `task_tool` 把任务派给子 agent。子 agent 在独立上下文里跑完，只把结论交回主 agent：
+
+```
+主 agent ── task_tool(subagent_type="code_reviewer", task_description="检视未提交改动")
+               │  SDK 现场创建子 agent（上下文只有任务描述），和主 agent 共用沙箱和 token 统计
+               ▼
+            code_reviewer：skill_tool 读 code-review 技能 → git_changes → read_file / grep …
+               │  bash 经 ReadOnlyShellRail：只读命令放行，其余直接驳回（不弹确认）
+               │  每个工具调用 → 审计（agent=code_reviewer）+ 终端里以 │ 开头的一行
+               ▼
+主 agent ◀── 检视报告（主 agent 转述给你；要改的地方由主 agent 来改，照常需要你确认）
+```
+
 ## 安全模型
 
 | 层 | 机制 | 配置 |
@@ -113,10 +153,14 @@ OpenRouter、OpenAI、Anthropic，以及公司内部 OpenAI 兼容网关的写�
 | 文件沙箱 | 文件工具和命令里引用的路径只能落在项目目录、agent 工作区和技能目录 | `MOLE_RESTRICT_TO_PROJECT` |
 | 命令黑名单 | `CommandGuardRail`：sudo、rm -rf /、强推、reset --hard、curl\|sh 等直接驳回 | `config.DEFAULT_BASH_DENY` + `MOLE_EXTRA_BASH_DENY` |
 | 人工确认 | `ApprovalRail`：写文件、改文件、执行命令前询问；`a` = 本会话总是允许 | `MOLE_CONFIRM_TOOLS`，`-y` 关闭 |
-| 审计 | 每次工具调用一行 JSONL | `MOLE_AUDIT_LOG` |
+| 子 agent 只读 | 没有写文件工具；bash 只放行 `ls` / `cat` / `grep` / `git diff` 等只读命令（`ReadOnlyShellRail`）；不挂人工确认 | `rails.read_only_violation` |
+| 审计 | 每次工具调用一行 JSONL（`agent` 字段区分主 agent 和各子 agent） | `MOLE_AUDIT_LOG` |
 
 > 注意：SDK 的 `BashTool` 自带 `deny_patterns`，但只在环境变量 `OPENJIUWEN_BASH_STRICT=1` 时生效，
 > 所以本项目用 `CommandGuardRail` 在 rail 层统一兜底。
+>
+> 子 agent 为什么只读：`task_tool` 在内部运行子 agent，子 agent 触发的人工确认不会传到终端
+>（openjiuwen 0.1.18），给它写权限就只能要么卡住、要么绕过确认。
 
 ## 怎么扩展
 
@@ -132,7 +176,8 @@ mole_agent/tools/
 ```
 
 复制 `_template.py` 为 `<工具名>.py`（文件名与工具名一致），实现 `create(settings) -> Tool`，重启 mole 即可。
-需要按配置开关时再加一个 `enabled(settings) -> bool`。`description` 要写清「什么时候该用」，模型靠它做选择；
+需要按配置开关时再加一个 `enabled(settings) -> bool`；工具不改任何东西时加 `READ_ONLY = True`，
+子 agent 才会拿到它（不写就只给主 agent）。`description` 要写清「什么时候该用」，模型靠它做选择；
 模板开头有完整的检查清单。模块写错（缺 `create`、工具名重复、`create` 报错）时启动会直接报出是哪个文件。
 
 **加一个 rail**（`rails.py`）：继承 `AgentRail`，覆写需要的钩子（`before_model_call` / `after_tool_call` 等），
@@ -159,8 +204,21 @@ mole_agent/tools/
 
 **项目约定**：在项目根目录写 `MOLE.md`（也兼容 `AGENTS.md` / `CLAUDE.md`），启动时注入系统提示词。
 
-**子智能体**：`create_deep_agent(subagents=[SubAgentConfig(...)])`，可参考
-`openjiuwen/harness/cli/agent/factory.py` 里的 `_build_subagents`。
+**加一个子 agent**：和工具一样，一个子 agent 一个文件，启动时自动发现。
+
+```
+mole_agent/subagents/
+├── __init__.py          自动发现与注册（build_subagents）
+├── _common.py           SubagentEnv：只读 rails、只读工具、技能、沙箱、按 [subagents] 选模型
+├── explore_agent.py     只读探索：直接用 SDK 的 build_explore_agent_config（提示词/描述都是 SDK 自带的）
+└── code_reviewer.py     代码检视：有 code-review 技能就按技能执行，返回分级的检视报告
+```
+
+新建 `<子agent名>.py`，实现 `create(env: SubagentEnv) -> SubAgentConfig`（可选 `enabled(settings)`），
+rails 用 `env.read_only_rails(名字)`，工具用 `env.tools()`，模型用 `env.model_for(名字)`，
+再传上 `workspace=env.workspace(名字)`、`sys_operation=env.sys_operation`，参考 `code_reviewer.py`。
+`agent_card.description` 要写清「什么时候派给它、task_description 写什么」，主 agent 靠它决定何时派活。
+`MOLE_ENABLE_SUBAGENTS=false` 可以整体关掉。
 
 ## 文件位置
 
@@ -169,7 +227,7 @@ mole_agent/tools/
 | `~/.mole-agent/.env` | 可选的全局配置（优先级低于本项目根目录的 `.env` 和环境变量） |
 | `~/.mole-agent/models.toml` | 可选的全局供应商配置（优先于本项目根目录的 `models.toml`） |
 | `~/.mole-agent/state.json` | 上次 `/model` 切换到的模型 |
-| `~/.mole-agent/workspace/` | agent 私有工作区（记忆、todo 等），与项目目录隔离 |
+| `~/.mole-agent/workspace/` | agent 私有工作区（记忆、todo 等），与项目目录隔离；子 agent 的在 `sub_agents/<名字>/` |
 | `~/.mole-agent/logs/` | SDK 日志（不输出到终端，也不写进项目目录） |
 | `~/.mole-agent/audit.jsonl` | 工具调用审计 |
 | `~/.mole-agent/history` | REPL 输入历史 |
@@ -183,7 +241,11 @@ pytest -q        # 不联网、不需要 API key
 - `tests/test_offline.py`：自定义工具的行为、命令拒绝规则、提示词、配置、MCP 解析、agent 组装
 - `tests/test_tools.py`：tools/ 目录约定——自动发现、文件名即工具名、模板可用、写错时的报错
 - `tests/test_models.py`：models.toml 解析、模型选择规则、启动优先级、供应商级参数覆盖
+- `tests/test_header_auth.py`：请求头鉴权的解析与校验；起一个本地假服务，确认对话、流式、`--check`、`/models`
+  发出的请求都带上了配置的请求头且没有 `Authorization`
 - `tests/test_skills.py`：仓库自带技能的格式检查；项目级 / 用户级 / 软链接技能能被加载和读取，沙箱外仍被拦截
+- `tests/test_subagents.py`：只读 shell 放行/拦截用例表、`git_changes` 的提交/分支范围、子 agent 自动发现与只读配置、
+  `[subagents]` 选模型，以及主 agent → `task_tool` → `code_reviewer` 的端到端流程（写命令被拒、不弹确认、审计带 agent 名）
 - `tests/test_e2e_fake_llm.py`：用 pip 装好的 openjiuwen SDK + 按剧本回复的假模型，
   跑完整流程（工具调用、确认/拒绝/总是允许、危险命令拦截、文件沙箱、审计日志、多轮上下文、运行中切换模型）
 
