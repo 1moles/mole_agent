@@ -608,6 +608,24 @@ def describe_auth(settings: Settings) -> str:
     return "API key（Authorization: Bearer）" + (f"，附加请求头 {names}" if settings.custom_headers else "")
 
 
+async def _explain_failure(settings: Settings, exc: BaseException) -> None:
+    """SDK 的报错只有最外层一句话；这里把异常链打出来，连接类错误再逐步做网络诊断。"""
+    from mole_agent import netcheck
+
+    chain = netcheck.describe_exception_chain(exc)
+    if len(chain) > 1:
+        console.print("[dim]异常链（最后一行是根因）：[/dim]")
+        for line in chain[1:]:
+            console.print(f"  {line}", style="dim", markup=False)
+    if not netcheck.is_connection_error(exc):
+        return
+    console.print("[bold]网络诊断[/bold]（按 openjiuwen 的实际行为逐步检查）")
+    steps = await asyncio.to_thread(netcheck.diagnose, settings.api_base, settings.verify_ssl)
+    for step in steps:
+        style = {True: "green", False: "red", None: "dim"}[step.ok]
+        console.print(f"  {step.render()}", style=style, markup=False)
+
+
 async def _check(settings: Settings) -> int:
     from mole_agent.agent import build_model
 
@@ -615,10 +633,13 @@ async def _check(settings: Settings) -> int:
     console.print(f"鉴权：{describe_auth(settings)}", markup=False)
     if settings.stream_only:
         console.print("调用：只走流式（stream_only = true，非流式调用在本地拼接）", markup=False)
+    sources = "、".join(str(p) for p in settings.catalog.sources) or "（无 models.toml，用的是 .env 里的 MOLE_*）"
+    console.print(f"配置：{sources}", markup=False)
     try:
         reply = await build_model(settings).invoke([{"role": "user", "content": "只回复两个字：你好"}])
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]✗ 模型调用失败：{esc(_friendly_error(exc))}[/red]")
+        await _explain_failure(settings, exc)
         return 1
     console.print(f"[green]✓ 模型可用[/green]，回复：{esc(_short(getattr(reply, 'content', reply), 80))}")
     return 0

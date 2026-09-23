@@ -270,6 +270,22 @@ rails 用 `env.read_only_rails(名字)`，工具用 `env.tools()`，模型用 `e
 `agent_card.description` 要写清「什么时候派给它、task_description 写什么」，主 agent 靠它决定何时派活。
 `MOLE_ENABLE_SUBAGENTS=false` 可以整体关掉。
 
+## 连不上模型怎么查
+
+`mole --check` 调用失败时会打出异常链（最后一行是根因），连接类错误还会按 openjiuwen 的实际行为逐步检查：
+走不走代理、NO_PROXY 是否生效、DNS、TCP、代理 CONNECT、TLS 握手。把这段输出发给维护者即可。常见原因：
+
+| 现象（诊断里的 ✗） | 原因与处理 |
+|---|---|
+| 会走代理 / 连接代理失败 / 代理 CONNECT 403、502 | 终端里设了 `http_proxy` 等代理变量，内网地址也被发给了代理。把域名加进 `NO_PROXY`，**要带前导点**：`.inner.example.com` |
+| NO_PROXY 写法 | openjiuwen 的 NO_PROXY 规则比 curl 严：`example.com` 不包含子域名，`*.example.com` 不支持，要写成 `.example.com`；它还会优先用 `http_proxy`（即使地址是 https）|
+| DNS 解析失败 / TCP 连接超时 | 不在内网、没连 VPN，或所在网络区域到不了这个地址 |
+| 证书校验失败 | 服务用公司内部 CA 的证书而本机 Python 不信任它；python.org 安装包装的 Python 要先运行「Install Certificates.command」。可把内部根证书加入信任库，或在该供应商下临时写 `verify_ssl = false` |
+| TLS 协商失败 | openjiuwen 只允许 TLS1.2+，TLS1.2 下只允许 ECDHE + AES-GCM 套件；诊断会对比 Python 默认配置能否握手 |
+
+另外先看 `--check` 前几行：「模型」和「配置」说明实际用的是哪个供应商、哪份 `models.toml`。
+`~/.mole-agent/models.toml` 优先于仓库里的，`~/.mole-agent/state.json` 会记住上次 `/model` 选的模型。
+
 ## 文件位置
 
 | 路径 | 内容 |
@@ -291,6 +307,8 @@ pytest -q        # 不联网、不需要 API key
 - `tests/test_offline.py`：自定义工具的行为、命令拒绝规则、提示词、配置、MCP 解析、agent 组装
 - `tests/test_tools.py`：tools/ 目录约定——自动发现、文件名即工具名、模板可用、写错时的报错
 - `tests/test_models.py`：models.toml 解析、模型选择规则、启动优先级、供应商级参数覆盖
+- `tests/test_netcheck.py`：连接诊断——异常链、openjiuwen 与 httpx 的代理选择差异、NO_PROXY 写法、
+  DNS / TCP / 代理 CONNECT / 证书 / 加密套件各步骤（本机临时服务，不联网）
 - `tests/test_stream_only.py`：起一个拒绝非流式请求的假网关，确认 `stream_only` 下 `--check`、带解析器的调用、
   工具调用都能通过流式拼接得到完整结果
 - `tests/test_windows.py`：powershell 同样受确认 / 拦截 / 只读守卫约束，Windows 危险命令用例表，
