@@ -81,10 +81,16 @@ cd D:\code\your-project; mole
   测试里的软链接用例在不能建软链接时自动跳过。
 - 老式 cmd 窗口里中文和颜色可能显示不正常，用 Windows Terminal 即可。
 
+### 斜杠命令与补全
+
 REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
 （默认未提交改动，也可以 `/review 提交 a1b2c3d`、`/review 和 main 比`），
 `/new` 新会话，`/history [序号]` 查看历史会话，`/resume [序号]` 回到历史会话继续聊，`/usage` token 用量，`/help`，`/exit`；
 `Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
+
+输入 `/` 自动展开命令菜单，继续输入可过滤候选；↑↓ 选择、Tab 补全，选中候选后 Enter 确认，再次 Enter 提交。Esc 关闭菜单并保留输入。`/model ` 和 `/models ` 支持本地配置候选补全。
+
+`/history` 和 `/resume` 同样支持命令名补全；会话序号或 id 需手动输入，暂不提供会话参数候选。
 
 ### 会话历史与续聊
 
@@ -193,6 +199,7 @@ models = ["<部署的模型名>"]
 ```
 ┌─────────────────────────── mole_agent（本项目）──────────────────────────┐
 │ cli.py      REPL / 流式渲染 / 人工确认与反问 / 斜杠命令 / Ctrl+C 中断      │
+│ commands/   命令注册 / 分发 / 菜单补全 / 帮助生成                         │
 │ agent.py    组装：模型 + 提示词 + 工具 + rails + MCP → create_deep_agent   │
 │ prompts.py  人设 + 工作准则 + 运行环境 + 项目记忆（MOLE.md/AGENTS.md…）    │
 │ tools/      自定义工具，每个工具一个文件，启动时自动发现                  │
@@ -253,6 +260,13 @@ models = ["<部署的模型名>"]
 >（openjiuwen 0.1.18），给它写权限就只能要么卡住、要么绕过确认。
 
 ## 怎么扩展
+
+**加一个斜杠命令**：在 `mole_agent/commands/__init__.py` 的 `default_registry()` 里注册 `CommandSpec`，
+填写名称、说明和异步处理函数；按需提供用法、别名、示例、参数补全或可用性判断。菜单、帮助和分发自动读取同一份定义。
+
+处理函数通过 `CommandContext` 访问运行时能力；沿用现有内置命令的 `ctx.actions[name]` 适配方式时，
+还需在 `cli.py` 的 `Repl.command_context()` 中接入对应操作。无需修改通用分发器或单独维护帮助命令列表。
+架构、取舍与当前限制见 [斜杠命令设计](docs/slash-command-architecture.md)。
 
 **加一个工具**：每个工具是 `mole_agent/tools/` 下的一个文件，启动时自动发现，不需要改其他代码。
 
@@ -348,6 +362,8 @@ pytest -q        # 不联网、不需要 API key
 
 - `tests/test_offline.py`：自定义工具的行为、命令拒绝规则、提示词、配置、MCP 解析、agent 组装
 - `tests/test_tools.py`：tools/ 目录约定——自动发现、文件名即工具名、模板可用、写错时的报错
+- `tests/test_commands.py`：命令注册与别名冲突、分发与错误处理、异步补全、输入框 Enter / Esc 行为、
+  帮助内容与样式，以及新增命令和示例的自动接入
 - `tests/test_models.py`：models.toml 解析、模型选择规则、启动优先级、供应商级参数覆盖
 - `tests/test_history.py`：会话历史——SDK 的文件格式、按项目分目录、列表排序和标题、损坏文件跳过、
   `/history` 列表 / 序号 / id 前缀看详情，斜杠命令、切换模型、出错、中断都会记下（假模型端到端）
