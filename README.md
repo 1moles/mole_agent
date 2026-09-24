@@ -85,7 +85,7 @@ cd D:\code\your-project; mole
 
 REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
 （默认未提交改动，也可以 `/review 提交 a1b2c3d`、`/review 和 main 比`），
-`/new` 新会话，`/history [序号]` 查看历史会话，`/resume [序号]` 回到历史会话继续聊，`/usage` token 用量，`/help`，`/exit`；
+`/new` 新会话，`/history [序号|关键词]` 查看 / 搜索历史会话，`/resume [序号|关键词]` 回到历史会话继续聊，`/usage` token 用量，`/help`，`/exit`；
 `Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
 
 输入 `/` 自动展开命令菜单，继续输入可过滤候选；↑↓ 选择、Tab 补全，选中候选后 Enter 确认，再次 Enter 提交。Esc 关闭菜单并保留输入。`/model ` 和 `/models ` 支持本地配置候选补全。
@@ -96,7 +96,21 @@ REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可�
 
 每次对话都按 openjiuwen 自带的 `SessionStore`（`openjiuwen.harness.cli.storage`）格式记下来，一个会话一个 JSON 文件，
 按项目分目录存在 `~/.mole-agent/sessions/<项目名>-<哈希>/`。`/history` 列出当前项目的会话（最近活动的在前，
-标题是第一条输入），输入序号看详情；也可以直接 `/history 2` 或 `/history <会话 id 前缀>`。
+标题是第一条输入），输入序号看详情；也可以直接 `/history 2` 或 `/history mole-1a2b`（会话 id 前缀）。
+
+**搜索**：`/history 关键词` 在标题和全部内容（你的输入、回复、工具调用摘要）里找，不区分大小写，不要求开头匹配；
+多个关键词用空格隔开，要都出现才算命中；纯数字会被当成序号，要搜数字或带空格的短语就加引号：`/history "8080"`。
+结果里会标出命中的那一段，选序号看详情。`/resume 关键词` 同样可以先搜再选。
+
+```
+› /history 你好
+搜索「你好」 找到 2 个会话 · 最近活动的在前
+   1. 09-24 10:45   1 轮 · deepseek/deepseek-flash  修一下登录的 bug
+      回复：…好了，登录失败时会提示原因。顺便跟你说声你好。
+   2. 09-24 10:40   1 轮 · deepseek/deepseek-flash  你好
+      你：你好
+输入序号查看详情（回车返回） ›
+```
 
 ```
 历史会话 kernel · 最近活动的在前
@@ -113,7 +127,7 @@ REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可�
   以及切换模型、中断、出错。子 agent 内部的工具调用不记，只记它交回的结果。
 - `MOLE_SAVE_HISTORY=false` 关闭记录（续聊也一起关掉）。历史和检查点里都有对话原文，别把 `~/.mole-agent/` 发给别人。
 
-**继续聊**：看完详情按 `r`，或者 `/resume [序号]`，就回到那个会话，agent 记得之前的全部上下文
+**继续聊**：看完详情按 `r`，或者 `/resume [序号|关键词]`，就回到那个会话，agent 记得之前的全部上下文
 （包括工具调用和结果，不只是历史里的摘要）。启动时 `mole -c` 直接继续当前项目最近的会话，`mole -r` 先列出来选。
 
 ```
@@ -366,7 +380,7 @@ pytest -q        # 不联网、不需要 API key
   帮助内容与样式，以及新增命令和示例的自动接入
 - `tests/test_models.py`：models.toml 解析、模型选择规则、启动优先级、供应商级参数覆盖
 - `tests/test_history.py`：会话历史——SDK 的文件格式、按项目分目录、列表排序和标题、损坏文件跳过、
-  `/history` 列表 / 序号 / id 前缀看详情，斜杠命令、切换模型、出错、中断都会记下（假模型端到端）
+  `/history` 列表 / 序号 / id 前缀看详情、关键词模糊搜索（标题和内容、不区分大小写、多词、引号），斜杠命令、切换模型、出错、中断都会记下（假模型端到端）
 - `tests/test_resume.py`：续聊——两次「重启」之间恢复完整上下文、`mole -c` 选最近的会话、新会话不带旧上下文、
   待确认的操作续聊后重新询问、没有检查点的旧会话被拒绝、「总是允许」不跟随、缺 aiosqlite 时降级
 - `tests/test_netcheck.py`：连接诊断——异常链、openjiuwen 与 httpx 的代理选择差异、NO_PROXY 写法、

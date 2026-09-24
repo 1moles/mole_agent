@@ -14,6 +14,7 @@ import asyncio
 import copy
 import json
 import logging
+import re
 import signal
 import sys
 import uuid
@@ -515,8 +516,11 @@ class Repl:
 
     # ---------- 会话历史与续聊 ----------
     async def _pick_session(self, arg: str, action: str) -> Any:
-        """按序号 / 会话 id 前缀选一个历史会话；不带参数时列出来让用户选。返回 SessionSummary 或 None。"""
-        from mole_agent.history import list_sessions
+        """选一个历史会话，返回 SessionSummary 或 None。arg 的写法：
+        空 → 列出最近的会话让用户选；纯数字 → 列表里的序号；mole-xxxx → 会话 id（前缀即可）；
+        其他 → 关键词模糊搜索（标题和内容都搜，不区分大小写，多个词要都出现；加引号可以搜纯数字或短语）。
+        """
+        from mole_agent.history import list_sessions, search_keywords, search_sessions
 
         items = list_sessions(self.history.dir, limit=HISTORY_LIST_LIMIT)
         if not items:
@@ -524,7 +528,7 @@ class Repl:
             return None
         if not arg:
             print_history_list(items, self.session_id, self.settings.project_dir.name)
-            arg = await self._ask(f"输入序号{action}（回车返回） › ")
+            arg = await self._ask(f"输入序号{action}，或输入关键词搜索（回车返回） › ")
             if not arg:
                 return None
         if arg.isdigit():
@@ -532,11 +536,23 @@ class Repl:
                 console.print(f"[red]序号超出范围：1-{len(items)}[/red]")
                 return None
             return items[int(arg) - 1]
-        hits = [s for s in items if s.id.startswith(arg)]  # 也可以直接写会话 id（或能唯一确定它的前缀）
-        if len(hits) != 1:
-            console.print(f"[red]{'找不到' if not hits else '有多个'}以 {esc(arg)} 开头的会话[/red]")
+        if arg.startswith("mole-"):  # 会话 id（resume 提示、详情标题里显示的就是它）
+            by_id = [s for s in list_sessions(self.history.dir) if s.id.startswith(arg)]
+            if len(by_id) == 1:
+                return by_id[0]
+        keywords = search_keywords(arg)
+        hits = search_sessions(self.history.dir, arg)
+        if not hits:
+            console.print(f"[yellow]没有找到包含「{esc(' '.join(keywords) or arg)}」的会话[/yellow]")
             return None
-        return hits[0]
+        print_search_results(hits[:HISTORY_LIST_LIMIT], keywords, self.session_id, total=len(hits))
+        choice = await self._ask(f"输入序号{action}（回车返回） › ")
+        if not choice:
+            return None
+        if not choice.isdigit() or not 1 <= int(choice) <= min(len(hits), HISTORY_LIST_LIMIT):
+            console.print(f"[red]请输入 1-{min(len(hits), HISTORY_LIST_LIMIT)} 之间的序号[/red]")
+            return None
+        return hits[int(choice) - 1].session
 
     async def _cmd_history(self, arg: str) -> None:
         if self.history is None:
@@ -687,6 +703,35 @@ def print_history_list(items: list[Any], current_id: str, project_name: str) -> 
             f"  [dim]{i:>2}.[/dim] {esc(local_time(item.updated_at))}  [dim]{item.user_turns:>2} 轮 · "
             f"{esc(item.model)}[/dim]  {esc(item.title)}{mark}"
         )
+
+
+def _highlight(text: str, keywords: list[str]) -> str:
+    """把关键词标成高亮，其余文字转义（结果是 rich markup）。"""
+    if not keywords:
+        return esc(text)
+    pattern = re.compile("|".join(re.escape(k) for k in keywords), re.IGNORECASE)
+    out, pos = [], 0
+    for match in pattern.finditer(text):
+        out.append(esc(text[pos:match.start()]))
+        out.append(f"[bold yellow]{esc(match.group(0))}[/bold yellow]")
+        pos = match.end()
+    out.append(esc(text[pos:]))
+    return "".join(out)
+
+
+def print_search_results(hits: list[Any], keywords: list[str], current_id: str, total: int) -> None:
+    from mole_agent.history import local_time
+
+    more = f"，只显示最近 {len(hits)} 个" if total > len(hits) else ""
+    console.print(f"[bold]搜索「{esc(' '.join(keywords))}」[/bold] [dim]找到 {total} 个会话 · 最近活动的在前{more}[/dim]")
+    for i, hit in enumerate(hits, 1):
+        item = hit.session
+        mark = "  [green]← 当前[/green]" if item.id == current_id else ""
+        console.print(
+            f"  [dim]{i:>2}.[/dim] {esc(local_time(item.updated_at))}  [dim]{item.user_turns:>2} 轮 · "
+            f"{esc(item.model)}[/dim]  {_highlight(item.title, keywords)}{mark}"
+        )
+        console.print(f"      [dim]{_highlight(hit.snippet, keywords)}[/dim]")
 
 
 def print_session_detail(session: Any, current: bool = False) -> None:
