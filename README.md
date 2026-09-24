@@ -4,6 +4,8 @@
 底座是 openJiuwen 的 **DeepAgent harness**（`openjiuwen.harness.create_deep_agent`），
 本项目在上面加了自己的人设、工具、安全 rails 和终端交互。
 
+完整的架构说明、特性清单和使用手册见 [docs/mole-manual.html](docs/mole-manual.html)（用浏览器打开）。
+
 ## 快速开始
 
 需要 **Python 3.11 – 3.13**（openjiuwen 的硬性要求）。macOS 自带的 `python3` 是 3.9，

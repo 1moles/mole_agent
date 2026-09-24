@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mole 架构与使用手册</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --bg:#F3F5F2; --surface:#FFFFFF; --surface-2:#E9ECE7; --ink:#1D2320; --muted:#5A635D; --line:#D6DBD3;
+  --accent:#8A4C1C; --accent-soft:#F2E4D6; --teal:#1E6A62; --teal-soft:#DCEDEA;
+  --warn:#8A5D00; --warn-soft:#FAEFD3; --danger:#A13828; --danger-soft:#F7E0DB;
+  --term-bg:#1C221F; --term-ink:#DDE3DC; --term-dim:#8E9A92; --term-green:#8FD18A; --term-cyan:#7CC6D6; --term-yellow:#E3C26A; --term-magenta:#D69BD8;
+  --serif:"Noto Serif SC","Songti SC","STSong",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC","Segoe UI",sans-serif;
+  --mono:"JetBrains Mono","SF Mono",Menlo,Consolas,"Noto Sans Mono CJK SC",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#121513; --surface:#1A1F1C; --surface-2:#232924; --ink:#E2E7E1; --muted:#9AA39C; --line:#2E3530;
+    --accent:#D89A62; --accent-soft:#3A2A1B; --teal:#6CC3B7; --teal-soft:#16322E;
+    --warn:#E4B955; --warn-soft:#33290F; --danger:#EE8B7B; --danger-soft:#3A1E1A;
+    --term-bg:#0D100E; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121513; --surface:#1A1F1C; --surface-2:#232924; --ink:#E2E7E1; --muted:#9AA39C; --line:#2E3530;
+  --accent:#D89A62; --accent-soft:#3A2A1B; --teal:#6CC3B7; --teal-soft:#16322E;
+  --warn:#E4B955; --warn-soft:#33290F; --danger:#EE8B7B; --danger-soft:#3A1E1A;
+  --term-bg:#0D100E; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{color-scheme:light}
+body{margin:0}
+[hidden]{display:none!important}
+img{max-width:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.75;padding:0 16px}
+a{color:var(--teal);text-underline-offset:2px}
+a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+code,kbd,pre{font-family:var(--mono)}
+code{font-size:.86em;background:var(--surface-2);padding:.1em .38em;border-radius:4px;overflow-wrap:anywhere}
+kbd{font-size:.8em;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:.05em .4em;background:var(--surface)}
+h1,h2,h3,h4{font-family:var(--serif);text-wrap:balance;line-height:1.35;margin:0}
+h2{font-size:1.65rem;margin-top:3.2rem;padding-top:.4rem}
+h3{font-size:1.2rem;margin-top:2.2rem}
+h4{font-size:1rem;margin-top:1.4rem;font-family:var(--sans);font-weight:650}
+p{margin:.7rem 0}
+ul,ol{margin:.6rem 0;padding-left:1.4rem}
+li{margin:.25rem 0}
+.wrap{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:230px minmax(0,1fr);gap:48px;padding-block:28px 80px}
+main{min-width:0;max-width:880px}
+
+/* 目录 */
+nav.toc{position:sticky;top:calc(env(safe-area-inset-top,0px) + 20px);align-self:start;max-height:calc(100vh - 40px);overflow:auto;font-size:13.5px;padding-right:6px}
+.toc details>summary{display:none}
+.toc .toc-title{font-family:var(--serif);font-weight:700;font-size:15px;margin-bottom:.6rem}
+.toc ol{list-style:none;padding:0;margin:0}
+.toc li{margin:0}
+.toc a{display:block;color:var(--muted);text-decoration:none;padding:3px 8px;border-left:2px solid transparent;line-height:1.45}
+.toc a:hover{color:var(--ink)}
+.toc a.active{color:var(--accent);border-left-color:var(--accent)}
+.toc ol ol a{padding-left:20px;font-size:12.5px}
+
+/* 页头 */
+header.doc{border-bottom:1px solid var(--line);padding-bottom:1.6rem;margin-bottom:.4rem}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--accent);text-transform:uppercase}
+header.doc h1{font-size:2.2rem;margin:.35rem 0 .6rem}
+header.doc .lede{font-size:1.05rem;color:var(--muted);max-width:62ch;margin:0}
+.facts{display:flex;flex-wrap:wrap;gap:8px 10px;margin-top:1.2rem;padding:0;list-style:none}
+.facts li{margin:0;font-size:13px;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:3px 12px;font-variant-numeric:tabular-nums}
+.facts b{font-family:var(--mono);font-weight:600;color:var(--accent);margin-right:4px}
+.basis{font-size:13px;color:var(--muted);margin-top:.9rem}
+
+/* 表格 */
+.table-wrap{overflow-x:auto;margin:1rem 0;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13.5px;line-height:1.6}
+th,td{text-align:left;vertical-align:top;padding:8px 12px;border-bottom:1px solid var(--line)}
+th{background:var(--surface-2);font-weight:650;white-space:nowrap;font-size:12.5px;letter-spacing:.02em}
+tr:last-child td{border-bottom:none}
+td code{white-space:nowrap}
+td.num{font-variant-numeric:tabular-nums;font-family:var(--mono);white-space:nowrap}
+td.wrapcode code{white-space:normal}
+.cat{font-family:var(--serif);font-weight:700;background:var(--accent-soft)!important;color:var(--accent)}
+
+/* 终端与命令 */
+.codebox{position:relative;margin:1rem 0}
+pre{margin:0;background:var(--term-bg);color:var(--term-ink);border-radius:8px;padding:14px 16px;overflow-x:auto;font-size:12.8px;line-height:1.6;tab-size:2}
+pre .d{color:var(--term-dim)} pre .g{color:var(--term-green)} pre .c{color:var(--term-cyan)} pre .y{color:var(--term-yellow)} pre .m{color:var(--term-magenta)}
+pre .cm{color:var(--term-dim);font-style:italic}
+.codebox .label{position:absolute;top:0;left:14px;transform:translateY(-50%);font-family:var(--mono);font-size:11px;background:var(--accent);color:#fff;padding:1px 8px;border-radius:999px}
+.copy{position:absolute;top:8px;right:8px;font:12px var(--sans);background:rgba(255,255,255,.08);color:var(--term-ink);border:1px solid rgba(255,255,255,.18);border-radius:5px;padding:2px 9px;cursor:pointer}
+.copy:hover{background:rgba(255,255,255,.16)}
+
+/* 提示框 */
+.note,.warn{border-radius:8px;padding:10px 14px;margin:1rem 0;font-size:14px}
+.note{background:var(--teal-soft);border:1px solid color-mix(in srgb,var(--teal) 30%,transparent)}
+.warn{background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 35%,transparent)}
+.note b,.warn b{font-weight:650}
+
+/* 分层图 */
+.layers{display:grid;gap:10px;margin:1.2rem 0}
+.layer{border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:12px 14px;display:grid;grid-template-columns:150px minmax(0,1fr);gap:12px;align-items:start}
+.layer.mole{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.layer.sdk{background:var(--surface-2)}
+.layer .lname{font-family:var(--serif);font-weight:700;font-size:14.5px;line-height:1.4}
+.layer .lname small{display:block;font-family:var(--sans);font-weight:400;color:var(--muted);font-size:12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:12.5px;line-height:1.45;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--bg)}
+.chip b{font-family:var(--mono);font-weight:600;font-size:12px;color:var(--accent);display:block}
+.layer.sdk .chip b{color:var(--teal)}
+.down{text-align:center;color:var(--muted);font-size:12px;line-height:1}
+
+/* 流程 */
+.flow{list-style:none;padding:0;margin:1.2rem 0;counter-reset:step}
+.flow>li{position:relative;padding:0 0 14px 40px;margin:0}
+.flow>li::before{counter-increment:step;content:counter(step);position:absolute;left:0;top:1px;width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font:600 13px/26px var(--mono);text-align:center}
+.flow>li::after{content:"";position:absolute;left:12.5px;top:30px;bottom:2px;width:1px;background:var(--line)}
+.flow>li:last-child::after{display:none}
+.flow .t{font-weight:650}
+.pipe{list-style:none;padding:0;margin:1rem 0;display:grid;gap:6px}
+.pipe li{margin:0;display:grid;grid-template-columns:62px minmax(0,1fr);gap:10px;align-items:baseline;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:14px}
+.pipe .pri{font-family:var(--mono);font-size:12px;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.pipe li.stop{border-color:color-mix(in srgb,var(--danger) 40%,var(--line))}
+.pipe li.ask{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+.pipe li.run{background:var(--teal-soft)}
+
+/* 标签 */
+.tag{display:inline-block;font-size:11.5px;line-height:1.5;border-radius:4px;padding:0 6px;font-weight:600;white-space:nowrap}
+.tag.mole{background:var(--accent-soft);color:var(--accent)}
+.tag.sdk{background:var(--teal-soft);color:var(--teal)}
+.tag.ro{background:var(--surface-2);color:var(--muted)}
+.tag.danger{background:var(--danger-soft);color:var(--danger)}
+
+/* 图例 */
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:6px 18px;margin:1rem 0;font-size:14px}
+.legend div{display:flex;gap:10px;align-items:baseline}
+.legend .sym{font-family:var(--mono);min-width:3.2em;display:inline-block;text-align:center;border-radius:4px;background:var(--term-bg);color:var(--term-ink);font-size:12.5px;padding:0 4px}
+
+.timeline{list-style:none;padding:0;margin:1rem 0;border-left:2px solid var(--line)}
+.timeline li{position:relative;margin:0 0 12px;padding-left:18px}
+.timeline li::before{content:"";position:absolute;left:-6px;top:.6em;width:10px;height:10px;border-radius:50%;background:var(--surface);border:2px solid var(--accent)}
+.timeline .meta{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.timeline li.pending::before{border-style:dashed;border-color:var(--muted)}
+
+section>h2 .num,section h3 .num{font-family:var(--mono);font-size:.7em;color:var(--accent);margin-right:.5em;font-weight:600;vertical-align:.12em}
+.muted{color:var(--muted)}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+footer{margin-top:4rem;padding-top:1rem;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+
+@media (max-width:1000px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:0}
+  nav.toc{position:static;max-height:none;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:6px 10px;margin-bottom:1.2rem}
+  .toc details>summary{display:list-item;cursor:pointer;font-family:var(--serif);font-weight:700;padding:4px 0}
+  .toc .toc-title{display:none}
+}
+@media (max-width:560px){
+  body{font-size:14.5px}
+  header.doc h1{font-size:1.75rem}
+  h2{font-size:1.4rem}
+  .layer{grid-template-columns:minmax(0,1fr)}
+  .pipe li{grid-template-columns:minmax(0,1fr)}
+  .pipe .pri{text-align:left}
+}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <details id="toc-details" open>
+    <summary>目录</summary>
+    <div class="toc-title">目录</div>
+    <ol>
+      <li><a href="#overview">概览</a></li>
+      <li><a href="#arch">架构</a>
+        <ol>
+          <li><a href="#arch-layers">分层</a></li>
+          <li><a href="#arch-modules">模块职责</a></li>
+          <li><a href="#arch-turn">一轮对话怎么跑</a></li>
+          <li><a href="#arch-rails">Rails</a></li>
+          <li><a href="#arch-tools">工具</a></li>
+          <li><a href="#arch-subagents">子 agent</a></li>
+          <li><a href="#arch-context">上下文工程</a></li>
+          <li><a href="#arch-storage">持久化</a></li>
+        </ol>
+      </li>
+      <li><a href="#features">特性清单</a></li>
+      <li><a href="#manual">使用手册</a>
+        <ol>
+          <li><a href="#install">安装</a></li>
+          <li><a href="#config">配置</a></li>
+          <li><a href="#cli">启动参数</a></li>
+          <li><a href="#commands">斜杠命令</a></li>
+          <li><a href="#interact">对话中的交互</a></li>
+          <li><a href="#sessions">历史与续聊</a></li>
+          <li><a href="#context">上下文管理</a></li>
+          <li><a href="#review">代码检视</a></li>
+          <li><a href="#extend">扩展 Mole</a></li>
+          <li><a href="#diagnose">连不上模型</a></li>
+          <li><a href="#files">文件位置</a></li>
+        </ol>
+      </li>
+      <li><a href="#security">安全模型</a></li>
+      <li><a href="#tests">测试</a></li>
+      <li><a href="#limits">已知限制</a></li>
+      <li><a href="#changelog">演进记录</a></li>
+    </ol>
+  </details>
+</nav>
+
+<main>
+<header class="doc">
+  <div class="eyebrow">mole-agent 0.4.1 · 技术手册</div>
+  <h1>Mole 架构与使用手册</h1>
+  <p class="lede">Mole 是运行在终端里的编码助手：在任意项目目录执行 <code>mole</code>，用自然语言让它读代码、改代码、跑命令、做检视。底座是 openJiuwen 的 DeepAgent，Mole 负责人设、工具、安全 rails、模型接入和终端交互。</p>
+  <ul class="facts">
+    <li><b>0.4.1</b>mole-agent</li>
+    <li><b>≥0.1.18</b>openjiuwen</li>
+    <li><b>3.11–3.13</b>Python</li>
+    <li><b>16</b>个工具（Windows 17）</li>
+    <li><b>2</b>个子 agent</li>
+    <li><b>11</b>个斜杠命令</li>
+    <li><b>258</b>个测试</li>
+  </ul>
+  <p class="basis">依据：仓库 main 分支 <code>baf9aa0</code>，加上尚未提交的 question 工具改动（2026-09-24）。数字和默认值均对照源码核实。</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">01</span>概览</h2>
+<p>一句话：<b>openJiuwen 提供 agent 的引擎，Mole 把它装配成一个可以放心交给它改代码的终端工具。</b></p>
+<div class="two">
+  <div class="note"><b>SDK 负责</b><br>ReAct 循环与外层任务循环、todo 规划、技能加载、子 agent 调度（task_tool）、上下文压缩、检查点、模型客户端、流式输出。</div>
+  <div class="note" style="background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 30%,transparent)"><b>Mole 负责</b><br>多供应商模型接入、人设与项目记忆、自定义工具、安全 rails（拦截 / 确认 / 只读）、提问、会话历史与续聊、上下文管理命令、连接诊断、终端交互。</div>
+</div>
+<p>典型用法：</p>
+<div class="codebox"><pre class="cmd">cd ~/code/your-project
+mole                                  <span class="cm"># 进入对话</span>
+mole -p "解释一下这个仓库的结构"       <span class="cm"># 单次执行后退出</span>
+mole -c                               <span class="cm"># 继续这个项目最近的会话</span></pre></div>
+</section>
+
+<section id="arch">
+<h2><span class="num">02</span>架构</h2>
+
+<h3 id="arch-layers">分层</h3>
+<p>上面三层是本项目的代码，下面两层是 pip 安装的 openjiuwen SDK。Mole 只通过 SDK 的公开接口扩展它：rail 钩子、工具注册、客户端注册表、回调事件、上下文引擎的方法。</p>
+<div class="layers">
+  <div class="layer mole">
+    <div class="lname">终端交互<small>mole_agent</small></div>
+    <div class="chips">
+      <div class="chip"><b>cli.py</b>REPL、流式渲染、确认与提问、Ctrl+C 中断、--check</div>
+      <div class="chip"><b>commands/</b>斜杠命令注册、分发、菜单补全、帮助</div>
+    </div>
+  </div>
+  <div class="down">▼</div>
+  <div class="layer mole">
+    <div class="lname">业务装配<small>mole_agent</small></div>
+    <div class="chips">
+      <div class="chip"><b>agent.py</b>模型 + 提示词 + 工具 + rails + MCP + 子 agent → create_deep_agent</div>
+      <div class="chip"><b>prompts.py</b>人设、工作准则、运行环境、项目记忆</div>
+      <div class="chip"><b>tools/</b>git_changes · project_overview · question</div>
+      <div class="chip"><b>rails.py</b>拦截、确认、提问、只读、轨迹、用量、压缩适配</div>
+      <div class="chip"><b>subagents/</b>explore_agent · code_reviewer</div>
+      <div class="chip"><b>context.py</b>/context、/compact、压缩失败原因</div>
+      <div class="chip"><b>history.py</b>会话历史、搜索、检查点</div>
+      <div class="chip"><b>netcheck.py</b>异常链与网络诊断</div>
+    </div>
+  </div>
+  <div class="down">▼</div>
+  <div class="layer mole">
+    <div class="lname">配置<small>mole_agent</small></div>
+    <div class="chips">
+      <div class="chip"><b>config.py</b>MOLE_* 环境变量 → Settings，内置命令拒绝规则</div>
+      <div class="chip"><b>models.py</b>models.toml → 供应商目录、选择规则、/models 查询</div>
+    </div>
+  </div>
+  <div class="down">▼</div>
+  <div class="layer sdk">
+    <div class="lname">openjiuwen.harness<small>DeepAgent</small></div>
+    <div class="chips">
+      <div class="chip"><b>任务循环</b>模型说完成之前持续推进</div>
+      <div class="chip"><b>todo</b>多步任务规划</div>
+      <div class="chip"><b>SkillUseRail</b>技能与 skill_tool</div>
+      <div class="chip"><b>task_tool</b>派活给子 agent</div>
+      <div class="chip"><b>context_engineer</b>上下文处理器链</div>
+      <div class="chip"><b>SysOperationRail</b>文件与命令工具、沙箱</div>
+      <div class="chip"><b>Workspace</b>agent 私有工作区</div>
+    </div>
+  </div>
+  <div class="down">▼</div>
+  <div class="layer sdk">
+    <div class="lname">openjiuwen.core<small>基础设施</small></div>
+    <div class="chips">
+      <div class="chip"><b>Model</b>OpenAI 兼容 / Anthropic 客户端</div>
+      <div class="chip"><b>ReActAgent</b>推理-行动循环、中断与恢复</div>
+      <div class="chip"><b>ContextEngine</b>上下文窗口与压缩</div>
+      <div class="chip"><b>Runner / Session</b>运行、输出流</div>
+      <div class="chip"><b>Checkpointer</b>会话状态持久化</div>
+      <div class="chip"><b>回调框架</b>LLM / 工具事件</div>
+    </div>
+  </div>
+</div>
+
+<h3 id="arch-modules">模块职责</h3>
+<p>依赖只从上往下：配置 → 工具 → rails → 子 agent → 上下文 → 装配 → 终端。<code>config.py</code>、<code>models.py</code>、<code>prompts.py</code>、<code>context.py</code> 不在模块顶层导入 SDK，<code>mole --help</code>、<code>--list-models</code> 不用加载整个 SDK。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>模块</th><th>职责</th><th>关键对象</th></tr></thead>
+<tbody>
+<tr><td><code>config.py</code></td><td>读取环境变量和 <code>.env</code>，选出启动模型，得到一份 Settings；内置命令拒绝规则；bash 与 powershell 的确认分组</td><td class="wrapcode"><code>Settings</code> <code>load_settings</code> <code>DEFAULT_BASH_DENY</code></td></tr>
+<tr><td><code>models.py</code></td><td>解析 <code>models.toml</code>：供应商、鉴权方式、请求头、stream_only、<code>[subagents]</code>；模型选择规则；兼容旧的单模型配置；<code>/models</code> 在线查询</td><td class="wrapcode"><code>ProviderConfig</code> <code>ModelCatalog</code></td></tr>
+<tr><td><code>prompts.py</code></td><td>系统提示词：人设与工作准则、运行环境（项目路径、系统、日期、git 状态）、项目记忆文件、可用子 agent</td><td class="wrapcode"><code>build_system_prompt</code></td></tr>
+<tr><td><code>tools/</code></td><td>自定义工具，一个文件一个，启动时自动发现；<code>READ_ONLY = True</code> 的工具也给只读子 agent</td><td class="wrapcode"><code>build_custom_tools</code></td></tr>
+<tr><td><code>rails.py</code></td><td>自定义 rails：命令拦截、人工确认、提问、子 agent 只读 shell、工具轨迹与审计、token 统计、压缩适配；命令切分函数</td><td class="wrapcode"><code>CommandGuardRail</code> <code>ApprovalRail</code> <code>QuestionRail</code> …</td></tr>
+<tr><td><code>subagents/</code></td><td>子 agent，一个文件一个，自动发现；共用只读 rails、工具、技能、沙箱和模型选择</td><td class="wrapcode"><code>SubagentEnv</code> <code>build_subagents</code></td></tr>
+<tr><td><code>context.py</code></td><td>上下文占用统计、手动压缩、压缩失败原因、中文「上下文超长」识别</td><td class="wrapcode"><code>CompressionWatcher</code> <code>compact</code> <code>context_report</code></td></tr>
+<tr><td><code>history.py</code></td><td>会话历史（SDK SessionStore 格式，原子写入）、列表与关键词搜索、续聊用的 SQLite 检查点</td><td class="wrapcode"><code>HistoryRecorder</code> <code>search_sessions</code> <code>ContextCheckpoint</code></td></tr>
+<tr><td><code>netcheck.py</code></td><td><code>mole --check</code> 失败时打出异常链，按 openjiuwen 的实际行为逐步诊断网络</td><td class="wrapcode"><code>diagnose</code> <code>effective_proxy</code></td></tr>
+<tr><td><code>agent.py</code></td><td>组装 DeepAgent；运行中切换模型；只走流式的模型与客户端；沙箱目录</td><td class="wrapcode"><code>build_agent</code> <code>switch_model</code> <code>StreamOnlyModel</code></td></tr>
+<tr><td><code>commands/</code></td><td>斜杠命令的统一定义：菜单、帮助、分发读同一份注册表</td><td class="wrapcode"><code>default_registry</code> <code>dispatch</code></td></tr>
+<tr><td><code>cli.py</code></td><td>入口 <code>mole</code>：参数解析、REPL、流式渲染、确认与提问、历史和续聊交互、SDK 日志重定向</td><td class="wrapcode"><code>main</code> <code>Repl</code> <code>StreamRenderer</code></td></tr>
+</tbody></table></div>
+
+<h3 id="arch-turn">一轮对话怎么跑</h3>
+<ol class="flow">
+  <li><span class="t">读取输入。</span>输入框基于 prompt_toolkit。以 <code>/</code> 开头的走命令注册表：<code>/review</code> 展开成提示词交给 agent，其余命令在本地执行，不经过模型。</li>
+  <li><span class="t">启动运行。</span><code>Runner.run_agent_streaming(agent, {"query": …}, session=会话 id)</code>。SDK 先从检查点恢复这个会话的状态，所以续聊只需要用回原来的会话 id。</li>
+  <li><span class="t">调模型前。</span>DeepAgent 外层任务循环驱动内层 ReAct。每次调模型前先跑 <code>before_model_call</code> rails，再由 ContextEngine 按占用决定是否压缩，最后组装上下文窗口，以流式请求发给模型。</li>
+  <li><span class="t">调工具。</span>模型要调工具时，<code>before_tool_call</code> rails 按优先级裁决：驳回、中断等你确认或回答、或者放行；执行后 <code>after_tool_call</code> 写终端轨迹和审计日志。</li>
+  <li><span class="t">渲染输出。</span>文本分片、工具调用与结果、压缩事件、上下文占用、中断请求都写进会话输出流，由 <code>StreamRenderer</code> 渲染到终端。</li>
+  <li><span class="t">处理中断。</span>遇到确认或提问，输出流结束，终端收集你的回答，打包成 <code>InteractiveInput</code> 用同一个会话再跑一次，SDK 从中断处继续。</li>
+  <li><span class="t">收尾。</span>SDK 把会话状态（含对话上下文、未完成的中断）存进检查点；Mole 把输入、回复、工具摘要、压缩提示写进会话历史。</li>
+</ol>
+
+<h3 id="arch-rails">Rails</h3>
+<p>rail 是挂在 agent 生命周期上的钩子对象，priority 数值大的先执行。主 agent 挂载的 rails：</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Rail</th><th>来源</th><th>优先级</th><th>钩子</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td><code>SysOperationRail</code></td><td><span class="tag sdk">SDK</span></td><td class="num">—</td><td>init</td><td>注册 read_file、write_file、edit_file、glob、list_files、grep、bash（Windows 另有 powershell）；文件访问受沙箱限制</td></tr>
+<tr><td><code>CommandGuardRail</code></td><td><span class="tag mole">Mole</span></td><td class="num">95</td><td>before_tool_call</td><td>bash / powershell 命中拒绝规则直接驳回，把原因交给模型，不打扰你</td></tr>
+<tr><td><code>ApprovalRail</code></td><td><span class="tag mole">Mole</span></td><td class="num">90</td><td>before_tool_call</td><td>写文件、改文件、执行命令前中断等你确认；支持「本会话总是允许」；继承 SDK 的 ConfirmInterruptRail</td></tr>
+<tr><td><code>QuestionRail</code></td><td><span class="tag mole">Mole</span></td><td class="num">90</td><td>before_tool_call</td><td>拦下 question 工具：中断等你回答，把答案作为工具结果交回；参数不合法时直接让模型重来</td></tr>
+<tr><td><code>ContextProcessorRail</code></td><td><span class="tag sdk">SDK</span></td><td class="num">85</td><td>init</td><td>把预设的上下文处理器链放进 ReActAgent 配置（转存大段工具输出、按阈值压缩）</td></tr>
+<tr><td><code>ContextAssembleRail</code></td><td><span class="tag sdk">SDK</span></td><td class="num">85</td><td>before_model_call</td><td>把工具说明等段落组装进系统提示</td></tr>
+<tr><td><code>SkillUseRail</code></td><td><span class="tag sdk">SDK</span></td><td class="num">—</td><td>init</td><td>加载技能目录里的 SKILL.md，提供 skill_tool</td></tr>
+<tr><td><code>CompressionRail</code></td><td><span class="tag mole">Mole</span></td><td class="num">50</td><td>init · before_model_call</td><td>网关只收流式时把压缩器换成流式客户端；订阅模型调用失败事件记下压缩失败原因。必须排在 ContextProcessorRail 之后初始化</td></tr>
+<tr><td><code>TokenUsageRail</code></td><td><span class="tag mole">Mole</span></td><td class="num">10</td><td>after_model_call</td><td>累计模型调用次数和 token（含子 agent，同一个实例），<code>/usage</code> 查看</td></tr>
+<tr><td><code>ToolTraceRail</code></td><td><span class="tag mole">Mole</span></td><td class="num">5</td><td>before / after_tool_call</td><td>终端显示 <code>● tool(args)</code> 和 <code>⎿ 结果</code>，写 <code>audit.jsonl</code>；等待确认中的调用不记</td></tr>
+</tbody></table></div>
+<p class="muted">另外 SDK 会自动挂：有子 agent 时的 SubagentRail（注册 task_tool）、任务循环的 TaskCompletionRail、任务规划的 todo 工具。</p>
+
+<h4>一次工具调用经过的 rails</h4>
+<ul class="pipe">
+  <li class="stop"><span class="pri">95</span><span><b>CommandGuardRail</b>：bash / powershell 命中拒绝规则 → 直接驳回，模型收到原因</span></li>
+  <li class="ask"><span class="pri">90</span><span><b>ApprovalRail</b>：write_file / edit_file / bash / powershell → 中断，等你 y / a / n</span></li>
+  <li class="ask"><span class="pri">90</span><span><b>QuestionRail</b>：question → 中断，等你回答；答案作为工具结果</span></li>
+  <li><span class="pri">5</span><span><b>ToolTraceRail</b>：终端输出 <code>● tool(args)</code></span></li>
+  <li class="run"><span class="pri">执行</span><span>工具运行。文件工具只能访问项目目录、<code>~/.mole-agent/workspace</code> 和技能目录</span></li>
+  <li><span class="pri">after</span><span><b>ToolTraceRail</b>：输出 <code>⎿ 结果摘要</code>，写审计日志</span></li>
+</ul>
+
+<h3 id="arch-tools">工具</h3>
+<p>Linux / macOS 下模型拿到 16 个工具，Windows 多一个 powershell。开启网页工具或配置 MCP 后还会更多。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>工具</th><th>来源</th><th>子 agent</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td><code>read_file</code> <code>glob</code> <code>list_files</code> <code>grep</code></td><td><span class="tag sdk">SDK</span></td><td>有</td><td>读文件、按模式找文件、列目录、搜内容</td></tr>
+<tr><td><code>write_file</code> <code>edit_file</code></td><td><span class="tag sdk">SDK</span></td><td>无</td><td>写文件、精确替换；默认要你确认</td></tr>
+<tr><td><code>bash</code></td><td><span class="tag sdk">SDK</span></td><td>只读命令</td><td>在项目目录执行命令；Windows 上按命令自动选 PowerShell、Git Bash 或 cmd；默认要你确认</td></tr>
+<tr><td><code>powershell</code></td><td><span class="tag sdk">SDK</span></td><td>无</td><td>仅 Windows；和 bash 同样受确认和拦截</td></tr>
+<tr><td><code>git_changes</code></td><td><span class="tag mole">Mole</span> <span class="tag ro">只读</span></td><td>有</td><td>取代码改动：未提交（默认）、<code>staged=true</code> 暂存区、<code>commit=</code> 某个提交、<code>base=</code> 当前分支相对某分支</td></tr>
+<tr><td><code>project_overview</code></td><td><span class="tag mole">Mole</span> <span class="tag ro">只读</span></td><td>有</td><td>语言分布（文件数、行数）、构建与依赖文件、顶层目录树（<code>path</code>、<code>max_depth</code> 1–4）</td></tr>
+<tr><td><code>question</code></td><td><span class="tag mole">Mole</span> 常驻</td><td>无</td><td>执行中向你提问：单选、多选、自定义答案，见 <a href="#interact">对话中的交互</a></td></tr>
+<tr><td><code>todo_create</code> <code>todo_list</code> <code>todo_get</code> <code>todo_modify</code></td><td><span class="tag sdk">SDK</span></td><td>无</td><td>多步任务的计划与进度</td></tr>
+<tr><td><code>skill_tool</code></td><td><span class="tag sdk">SDK</span></td><td>code_reviewer 有</td><td>读取技能（SKILL.md 及其 references）</td></tr>
+<tr><td><code>task_tool</code></td><td><span class="tag sdk">SDK</span></td><td>无</td><td>把任务派给子 agent，只拿回结论</td></tr>
+<tr><td><code>fetch_webpage</code> 等</td><td><span class="tag sdk">SDK</span></td><td>无</td><td><code>MOLE_ENABLE_WEB=true</code> 时注册；配置了搜索服务时还有搜索工具</td></tr>
+<tr><td>MCP 工具</td><td><code>.mcp.json</code></td><td>无</td><td>按配置接入的外部工具服务</td></tr>
+</tbody></table></div>
+<div class="note"><b>常驻</b>：question 的工具卡片声明为直接可见（<code>ToolExposure.DIRECT</code>），即使开启 SDK 的渐进式工具加载（<code>tool_search</code>）也不会被藏起来。</div>
+
+<h3 id="arch-subagents">子 agent</h3>
+<p>主 agent 用 <code>task_tool</code> 派活。子 agent 在独立上下文里跑完，只把结论交回，读大量代码不会挤占主对话的上下文。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>子 agent</th><th>什么时候用</th><th>实现</th><th>迭代上限</th></tr></thead>
+<tbody>
+<tr><td><code>explore_agent</code></td><td>只读探索：某个功能在哪、怎么实现、调用关系</td><td>直接用 SDK 的 <code>build_explore_agent_config</code>，提示词和描述都是 SDK 自带的；Mole 只替换 rails</td><td class="num">SDK 默认</td></tr>
+<tr><td><code>code_reviewer</code></td><td>代码检视、合入前检查、大改动后自查</td><td>Mole 自己的提示词；有 code-review 技能时严格按技能执行；返回「阻塞 / 建议 / 可选」分级、带 <code>路径:行号</code> 的问题和合入结论</td><td class="num">40</td></tr>
+</tbody></table></div>
+<ol class="flow">
+  <li>主 agent 调用 <code>task_tool(subagent_type="code_reviewer", task_description="检视未提交改动")</code>。</li>
+  <li>SDK 现场创建子 agent，上下文里只有任务描述；和主 agent 共用沙箱和 token 统计。</li>
+  <li>子 agent 读技能 → <code>git_changes</code> → <code>read_file</code> / <code>grep</code>。bash 经过 <code>ReadOnlyShellRail</code>：只读命令放行，其余直接驳回，不弹确认。</li>
+  <li>每个工具调用写审计（<code>agent=code_reviewer</code>），并经 ActivityFeed 在终端显示为以 <code>│</code> 开头的一行。</li>
+  <li>报告交回主 agent，由主 agent 转述；需要改代码时由主 agent 来改，照常需要你确认。</li>
+</ol>
+<p>每个子 agent 的模型可以在 <code>models.toml</code> 的 <code>[subagents]</code> 里单独指定；没写就跟随主 agent 当前模型（<code>/model</code> 切换后也跟着变）。<code>MOLE_ENABLE_SUBAGENTS=false</code> 整体关闭。</p>
+
+<h3 id="arch-context">上下文工程</h3>
+<p>压缩由 SDK 的处理器链完成，每次调模型前依次检查：</p>
+<div class="table-wrap"><table>
+<thead><tr><th>处理器</th><th>什么时候触发</th><th>做什么</th><th>调模型</th></tr></thead>
+<tbody>
+<tr><td><code>MessageSummaryOffloader</code></td><td>单条工具结果超过窗口 10%；空闲 300 秒后占用超过 50% 时，再处理超过 5% 的旧结果</td><td>全文转存，上下文里只留开头和结尾各约 2000 字的预览；read_file 的结果不处理</td><td>否</td></tr>
+<tr><td><code>SessionMemoryCompressor</code></td><td colspan="2">预设里是关闭的</td><td>—</td></tr>
+<tr><td><code>DialogueCompressor</code></td><td>占用达到窗口 80%</td><td>把最新一条用户消息之前的轮次压成摘要</td><td>是</td></tr>
+<tr><td><code>CurrentRoundCompressor</code></td><td>压完仍 ≥ 80%</td><td>把本轮的工具调用过程压成摘要</td><td>是</td></tr>
+<tr><td><code>RoundLevelCompressor</code></td><td>压完仍 ≥ 80%</td><td>除最后 4 条消息外全部压成摘要</td><td>是</td></tr>
+</tbody></table></div>
+<p>另外两条路径：模型报「上下文超长」时，ReActAgent 通过 <code>ContextEngine.recover_from_model_exception</code> 主动压缩一次再重试同一步（流式输出已经开始时不重试）；<code>/compact</code> 走同一个主动压缩入口。压缩后 SDK 会重新注入技能、已读文件、计划和 todo 状态。</p>
+<p>Mole 在这之上补了四件事：</p>
+<ul>
+  <li><b>只收流式的网关也能压缩。</b>压缩器按配置自己建模型客户端、调非流式 invoke；<code>CompressionRail</code> 在初始化时把这份配置换成 SDK 客户端注册表里登记的 <code>mole_stream_only</code> 客户端。</li>
+  <li><b>说清楚为什么没压。</b>SDK 压缩失败只写日志、事件里只有 noop；<code>CompressionWatcher</code> 订阅 <code>LLM_CALL_ERROR</code>，按压缩操作 id 记下原因。</li>
+  <li><b>认中文报错。</b>SDK 只认英文的超长报错；Mole 在 <code>recover_from_model_exception</code> 外包一层，把「输入长度超过…上下文」之类换成它认得的说法。</li>
+  <li><b>看得见。</b>压缩事件在终端合成一行提示；<code>/context</code> 查看占用，<code>/compact</code> 手动压缩。</li>
+</ul>
+
+<h3 id="arch-storage">持久化</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>数据</th><th>位置（<code>~/.mole-agent/</code> 下）</th><th>格式</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td>会话历史</td><td><code>sessions/&lt;项目名&gt;-&lt;哈希&gt;/&lt;会话id&gt;.json</code></td><td>SDK SessionStore 的 JSON，原子写入</td><td><code>/history</code> 查看和搜索</td></tr>
+<tr><td>对话上下文检查点</td><td><code>checkpoints.db</code></td><td>SQLite（SDK PersistenceCheckpointer）</td><td><code>/resume</code>、<code>mole -c</code> 恢复完整上下文和未完成的中断</td></tr>
+<tr><td>上次选的模型</td><td><code>state.json</code></td><td>JSON</td><td>下次启动默认用它</td></tr>
+<tr><td>审计日志</td><td><code>audit.jsonl</code></td><td>每次工具调用一行</td><td>追查 agent 做过什么</td></tr>
+<tr><td>SDK 日志</td><td><code>logs/</code></td><td>文本</td><td>排查问题；不输出到终端，也不写进项目目录</td></tr>
+<tr><td>输入历史</td><td><code>history</code></td><td>prompt_toolkit</td><td>输入框里 ↑↓ 翻看</td></tr>
+<tr><td>agent 工作区</td><td><code>workspace/</code></td><td>目录</td><td>记忆、todo 等；子 agent 的在 <code>sub_agents/&lt;名字&gt;/</code></td></tr>
+</tbody></table></div>
+<p class="muted">设置 <code>MOLE_HOME</code> 可以把整个 <code>~/.mole-agent</code> 换到别处。</p>
+</section>
+
+<section id="features">
+<h2><span class="num">03</span>特性清单</h2>
+<p>按领域列出全部功能，最后一列是入口。详细用法见<a href="#manual">使用手册</a>。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>特性</th><th>说明</th><th>入口</th></tr></thead>
+<tbody>
+<tr><td colspan="3" class="cat">模型接入</td></tr>
+<tr><td>多供应商目录</td><td>一份 <code>models.toml</code> 管理 DeepSeek、通义、Kimi、智谱、华为云 MaaS、硅基流动、OpenRouter、OpenAI、Anthropic 和公司内部网关；供应商可单独设置 temperature、max_tokens、timeout、verify_ssl</td><td><code>models.toml</code></td></tr>
+<tr><td>三种指定模型的写法</td><td><code>供应商/模型</code>、<code>供应商</code>（取列表第一个）、<code>模型名</code>（唯一命中即可）</td><td><code>-m</code> <code>/model</code></td></tr>
+<tr><td>运行中切换模型</td><td>不重建 agent：对话上下文、工具、「总是允许」都保留；下次启动默认用它</td><td><code>/model</code></td></tr>
+<tr><td>在线查询模型</td><td>调供应商的 <code>/models</code> 接口，带同样的请求头</td><td><code>/models [供应商]</code></td></tr>
+<tr><td>请求头鉴权</td><td><code>auth = "headers"</code> 时不发 Authorization，只发配置的请求头（如 ModelArts 的 X-Auth-Token）；值用 <code>${变量}</code> 从 .env 取</td><td><code>models.toml</code></td></tr>
+<tr><td>只走流式的网关</td><td><code>stream_only = true</code>：任务完成判断、<code>--check</code>、上下文压缩等非流式调用都改成流式并在本地拼接</td><td><code>models.toml</code></td></tr>
+<tr><td>子 agent 单独选模型</td><td>检视用强模型、探索用快模型；供应商缺 key 时回落到主模型并提示</td><td><code>[subagents]</code></td></tr>
+<tr><td>兼容旧配置</td><td><code>.env</code> 里的 <code>MOLE_PROVIDER</code> / <code>MOLE_API_BASE</code> / <code>MOLE_API_KEY</code> / <code>MOLE_MODEL</code> 作为 default 供应商</td><td><code>.env</code></td></tr>
+<tr><td>连通性检查与诊断</td><td>显示实际用的模型、鉴权方式、调用方式、配置来源；失败时打出异常链，并逐步检查代理、NO_PROXY、DNS、TCP、代理 CONNECT、TLS</td><td><code>mole --check</code></td></tr>
+
+<tr><td colspan="3" class="cat">终端交互</td></tr>
+<tr><td>流式输出与工具轨迹</td><td>回复逐字输出；每次工具调用显示 <code>● 工具(参数)</code> 和 <code>⎿ 结果</code>；子 agent 的动作以 <code>│</code> 缩进显示</td><td>自动</td></tr>
+<tr><td>斜杠命令菜单</td><td>输入 <code>/</code> 弹出命令和说明，继续输入过滤；<code>/model</code>、<code>/models</code> 有参数补全</td><td><code>/</code></td></tr>
+<tr><td>人工确认</td><td>写文件、改文件、执行命令前询问；可选本会话总是允许，或直接写拒绝理由</td><td>自动</td></tr>
+<tr><td>向你提问</td><td>常驻的 question 工具：一次多个问题，单选、多选、自定义答案、跳过</td><td>自动</td></tr>
+<tr><td>打断而不退出</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd> 只取消当前任务，回到输入框（Windows 也一样）</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td></tr>
+<tr><td>单次执行</td><td>执行一条指令后退出，适合脚本</td><td><code>mole -p</code></td></tr>
+<tr><td>思考过程</td><td>显示模型的推理文本</td><td><code>mole -v</code></td></tr>
+
+<tr><td colspan="3" class="cat">会话</td></tr>
+<tr><td>会话历史</td><td>按项目分目录记录输入、回复、工具摘要、切换模型、中断、出错；列表与详情</td><td><code>/history</code></td></tr>
+<tr><td>模糊搜索</td><td>在标题和全部内容里找，不区分大小写，多个关键词都要命中，命中片段高亮</td><td><code>/history 关键词</code></td></tr>
+<tr><td>续聊</td><td>恢复完整对话上下文（含工具调用和结果）；上次停在确认或提问上会先重新问你</td><td><code>/resume</code> <code>-c</code> <code>-r</code></td></tr>
+<tr><td>新会话与用量</td><td>开新会话并重置用量和临时授权；查看模型调用次数和 token</td><td><code>/new</code> <code>/usage</code></td></tr>
+
+<tr><td colspan="3" class="cat">上下文</td></tr>
+<tr><td>自动压缩</td><td>大段工具输出转存；占用到 80% 时把较早的对话压成摘要</td><td>自动</td></tr>
+<tr><td>超长后压缩重试</td><td>模型报上下文超长时压缩一次再重试；英文和中文报错都认</td><td>自动</td></tr>
+<tr><td>压缩提示</td><td>压缩时终端提示一行；超过 1 秒先显示「正在压缩…」；失败时给出原因和 stream_only 建议</td><td>自动</td></tr>
+<tr><td>查看占用</td><td>当前占用、窗口大小及来源、自动压缩阈值、最近一次请求各部分的大小</td><td><code>/context</code></td></tr>
+<tr><td>手动压缩</td><td>不等到阈值就压缩，可写上要保留的重点；结果写回检查点；可以 <kbd>Ctrl</kbd>+<kbd>C</kbd> 取消</td><td><code>/compact [重点]</code></td></tr>
+
+<tr><td colspan="3" class="cat">agent 能力</td></tr>
+<tr><td>任务循环与规划</td><td>模型说「做完了」之前持续推进；多步任务用 todo 列计划并更新</td><td>自动</td></tr>
+<tr><td>项目记忆</td><td>项目根目录的 <code>MOLE.md</code>（或 <code>AGENTS.md</code> / <code>CLAUDE.md</code> / <code>OPENJIUWEN.md</code>，取第一个找到的，最多 2 万字）注入系统提示词</td><td>文件</td></tr>
+<tr><td>技能</td><td>项目级 <code>.mole/skills/</code>、用户级 <code>~/.mole-agent/skills/</code>，格式与 Claude Code skills 一致，支持软链接；改动不用重启</td><td><code>SKILL.md</code></td></tr>
+<tr><td>子 agent</td><td>explore_agent 只读探索、code_reviewer 代码检视，只把结论交回</td><td>自动</td></tr>
+<tr><td>代码检视</td><td>检视未提交改动、某个提交或分支差异；有 code-review 技能时按技能执行</td><td><code>/review</code></td></tr>
+<tr><td>MCP</td><td>stdio、SSE、streamable HTTP，格式与 Claude Code 的 <code>.mcp.json</code> 相同</td><td><code>.mcp.json</code></td></tr>
+<tr><td>网页工具</td><td>抓取网页；配置了搜索服务时还能搜索</td><td><code>MOLE_ENABLE_WEB</code></td></tr>
+
+<tr><td colspan="3" class="cat">安全</td></tr>
+<tr><td>文件沙箱</td><td>文件工具和命令里引用的路径只能在项目目录、agent 工作区、技能目录内</td><td><code>MOLE_RESTRICT_TO_PROJECT</code></td></tr>
+<tr><td>命令拦截</td><td>sudo、rm -rf /、强推、reset --hard、curl|sh、格式化、Windows 删盘等直接驳回；命令按 <code>|</code> <code>&amp;&amp;</code> <code>||</code> <code>;</code> 单个 <code>&amp;</code> 和换行切开逐段检查</td><td><code>MOLE_EXTRA_BASH_DENY</code></td></tr>
+<tr><td>子 agent 只读</td><td>没有写文件工具和 question；bash 只放行白名单里的只读命令</td><td>自动</td></tr>
+<tr><td>审计</td><td>每次工具调用一行 JSONL，区分主 agent 和各子 agent</td><td><code>MOLE_AUDIT_LOG</code></td></tr>
+<tr><td>密钥不落盘</td><td>API key 和鉴权 token 只来自环境变量或 .env；终端只显示请求头名字，不显示取值</td><td><code>.env</code></td></tr>
+
+<tr><td colspan="3" class="cat">跨平台</td></tr>
+<tr><td>Windows</td><td>bash 按命令自动选 PowerShell、Git Bash 或 cmd，另注册 powershell 工具，两者同受确认和拦截；事件循环不支持信号处理时用 signal 接管 <kbd>Ctrl</kbd>+<kbd>C</kbd>；输出被重定向时遇到编不了的字符自动替换</td><td>自动</td></tr>
+
+<tr><td colspan="3" class="cat">可扩展</td></tr>
+<tr><td>工具、子 agent 自动发现</td><td>一个文件一个，放进目录重启即可；写错时启动直接报出是哪个文件</td><td><code>tools/</code> <code>subagents/</code></td></tr>
+<tr><td>斜杠命令注册表</td><td>菜单、帮助、分发读同一份定义</td><td><code>commands/</code></td></tr>
+<tr><td>自定义 rails</td><td>挂在模型调用、工具调用前后的钩子；可拦截并裁决工具调用</td><td><code>rails.py</code></td></tr>
+</tbody></table></div>
+</section>
+
+<section id="manual">
+<h2><span class="num">04</span>使用手册</h2>
+<p class="muted">下文终端输出里的数字、会话和模型名都是示例。</p>
+
+<h3 id="install"><span class="num">4.1</span>安装</h3>
+<p>需要 <b>Python 3.11 – 3.13</b>（openjiuwen 的硬性要求）。macOS 自带的 python3 是 3.9，用它建的虚拟环境里装 openjiuwen 会报 <code>No matching distribution found</code>。</p>
+<h4>macOS / Linux</h4>
+<div class="codebox"><span class="label">bash</span><pre class="cmd">cd kernel
+
+<span class="cm"># 方式一：uv（推荐，自动下载 Python 3.11，不需要管理员权限）</span>
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv --python 3.11 .venv &amp;&amp; source .venv/bin/activate
+uv pip install -U openjiuwen &amp;&amp; uv pip install -e ".[dev]"
+
+<span class="cm"># 方式二：Homebrew</span>
+brew install python@3.13
+python3.13 -m venv --clear .venv &amp;&amp; source .venv/bin/activate
+pip3 install -U openjiuwen &amp;&amp; pip3 install -e ".[dev]"
+
+pytest -q                            <span class="cm"># 离线测试，不需要 API key</span>
+cp models.example.toml models.toml   <span class="cm"># 供应商、地址、常用模型</span>
+cp .env.example .env                 <span class="cm"># 填你要用的供应商的 API key</span>
+mole --list-models
+mole --check
+cd ~/code/your-project &amp;&amp; mole</pre></div>
+<h4>Windows（PowerShell，推荐 Windows Terminal）</h4>
+<div class="codebox"><span class="label">powershell</span><pre class="cmd">winget install -e --id Python.Python.3.13
+winget install -e --id Git.Git        <span class="cm"># 自带 Git Bash，agent 跑 ls、grep 时会用到；装完重开终端</span>
+
+git clone https://github.com/1moles/mole_agent.git kernel
+cd kernel
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1          <span class="cm"># 报「禁止运行脚本」先执行 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned</span>
+python -m pip install -U pip
+pip install -U openjiuwen
+pip install -e ".[dev]"
+
+Copy-Item .env.example .env; notepad .env
+$env:PYTHONUTF8 = "1"; setx PYTHONUTF8 1
+pytest -q
+mole --check
+cd D:\code\your-project; mole</pre></div>
+<ul>
+  <li>配置目录在 <code>C:\Users\&lt;用户名&gt;\.mole-agent\</code>。</li>
+  <li>技能软链接需要打开「开发者模式」才能创建，否则直接复制技能目录。</li>
+  <li>老式 cmd 窗口里中文和颜色可能显示不正常，用 Windows Terminal 即可。</li>
+</ul>
+<p>依赖：openjiuwen、rich、prompt-toolkit、python-dotenv、httpx（/models 查询）、opentelemetry-sdk（补 openjiuwen 0.1.18 的打包缺陷）、aiosqlite（续聊的检查点）。升级 Mole 后重新执行一次 <code>pip install -e ".[dev]"</code>。</p>
+
+<h3 id="config"><span class="num">4.2</span>配置</h3>
+<h4>去哪里找配置</h4>
+<div class="table-wrap"><table>
+<thead><tr><th>配置</th><th>查找顺序（前者优先）</th></tr></thead>
+<tbody>
+<tr><td>环境变量</td><td>进程环境变量 &gt; Mole 仓库根目录的 <code>.env</code> &gt; <code>~/.mole-agent/.env</code></td></tr>
+<tr><td><code>models.toml</code></td><td><code>~/.mole-agent/models.toml</code> &gt; Mole 仓库根目录的 <code>models.toml</code>；同名供应商以前者为准，<code>default</code> 取第一个写了的</td></tr>
+<tr><td>启动用哪个模型</td><td>命令行 <code>-m</code> &gt; 上次 <code>/model</code> 切换的（<code>state.json</code>）&gt; <code>models.toml</code> 的 <code>default</code></td></tr>
+</tbody></table></div>
+<div class="note">「仓库根目录」指 Mole 本身的代码目录（kernel），不是你运行 mole 的项目目录。项目目录里放的是 <code>MOLE.md</code>、<code>.mole/skills/</code>、<code>.mcp.json</code>。</div>
+
+<h4>models.toml</h4>
+<div class="codebox"><span class="label">models.toml</span><pre class="cmd">default = "deepseek/deepseek-flash"
+
+[subagents]                                  <span class="cm"># 可选；没写的子 agent 跟随主模型</span>
+code_reviewer = "deepseek/deepseek-v4-pro"
+
+[providers.deepseek]
+client_provider = "DeepSeek"
+api_base = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"             <span class="cm"># key 放 .env</span>
+models = ["deepseek-flash", "deepseek-v4-pro"]
+
+[providers.modelarts]                        <span class="cm"># 请求头鉴权 + 只收流式的内部服务</span>
+client_provider = "ModelArts"
+api_base = "https://&lt;在线服务调用地址&gt;/v1"
+auth = "headers"
+headers = { "X-Auth-Token" = "${MODELARTS_TOKEN}" }
+stream_only = true
+models = ["&lt;部署的模型名&gt;"]
+
+[providers.internal]                         <span class="cm"># 公司内部 OpenAI 兼容网关</span>
+client_provider = "OpenAI"
+api_base = "https://llm-gateway.example.com/v1"
+api_key_env = "INTERNAL_LLM_KEY"
+verify_ssl = false                           <span class="cm"># 自签证书时</span>
+headers = { "X-Tenant" = "my-team" }
+models = ["coder-large"]</pre></div>
+<div class="table-wrap"><table>
+<thead><tr><th>字段</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>default</code></td><td>启动默认模型，写法同 <code>-m</code></td></tr>
+<tr><td><code>[subagents]</code></td><td>子 agent 名 = 模型；供应商没有 key 时回落到主模型，启动时提示</td></tr>
+<tr><td><code>client_provider</code></td><td>openjiuwen 的协议或厂商标识：OpenAI（任何 OpenAI 兼容接口）、Anthropic、DeepSeek、DashScope、Moonshot、Zhipu、SiliconFlow、OpenRouter、ModelArts、VolcEngine、Qianfan、MiniMax 等；写错启动时报出可选值</td></tr>
+<tr><td><code>api_base</code></td><td>接口地址，一般写到 <code>/v1</code></td></tr>
+<tr><td><code>api_key_env</code></td><td>存放 key 的环境变量名（推荐）；也可以写 <code>api_key</code>，但不要把密钥写进这个文件</td></tr>
+<tr><td><code>auth</code></td><td><code>api_key</code>（默认）/ <code>headers</code> / <code>none</code>，见下表</td></tr>
+<tr><td><code>headers</code></td><td>自定义请求头，值可写 <code>${变量}</code>；<code>Authorization</code>、<code>Host</code> 等会被 openjiuwen 丢弃，启动时提示</td></tr>
+<tr><td><code>stream_only</code></td><td>网关只接受 <code>stream=true</code> 时打开（也接受 <code>stream = true</code> 的写法）。不要自己往请求参数里加 stream，非流式调用会报 <code>'AsyncStream' object has no attribute 'choices'</code></td></tr>
+<tr><td><code>models</code></td><td>常用模型列表，<code>/model</code> 里按序号选；不在列表里的也能用 <code>供应商/模型名</code> 直接指定</td></tr>
+<tr><td><code>temperature</code> <code>max_tokens</code> <code>timeout</code> <code>verify_ssl</code></td><td>供应商级覆盖；没写时用全局的 <code>MOLE_*</code> 默认值</td></tr>
+</tbody></table></div>
+<div class="table-wrap"><table>
+<thead><tr><th><code>auth</code></th><th>发送的鉴权信息</th></tr></thead>
+<tbody>
+<tr><td><code>api_key</code></td><td><code>Authorization: Bearer &lt;key&gt;</code>，<code>headers</code> 作为附加请求头</td></tr>
+<tr><td><code>headers</code></td><td>只发 <code>headers</code>（如 ModelArts 的 <code>X-Auth-Token</code>、<code>X-Apig-AppCode</code>）；只配了 headers、没配任何 key 时自动按这种方式</td></tr>
+<tr><td><code>none</code></td><td>不鉴权（本地 vLLM、不校验的内部网关）</td></tr>
+</tbody></table></div>
+<p>缺环境变量的供应商不会出现在 <code>/model</code> 的编号里，列表末尾会提示要设置哪个变量。</p>
+
+<h4>环境变量（.env）</h4>
+<div class="table-wrap"><table>
+<thead><tr><th>变量</th><th>默认值</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>DEEPSEEK_API_KEY</code> 等</td><td class="num">—</td><td>各供应商的 key，名字由 <code>api_key_env</code> 决定；请求头里 <code>${变量}</code> 引用的 token 也放这里</td></tr>
+<tr><td><code>MOLE_TEMPERATURE</code></td><td class="num">不设</td><td>全局温度</td></tr>
+<tr><td><code>MOLE_MAX_TOKENS</code></td><td class="num">8192</td><td>单次回复的最大 token</td></tr>
+<tr><td><code>MOLE_TIMEOUT</code></td><td class="num">120</td><td>请求超时（秒）</td></tr>
+<tr><td><code>MOLE_VERIFY_SSL</code></td><td class="num">true</td><td>校验证书；内部网关自签证书时可设 false</td></tr>
+<tr><td><code>MOLE_AGENT_NAME</code></td><td class="num">Mole</td><td>助手的名字（写进人设）</td></tr>
+<tr><td><code>MOLE_LANGUAGE</code></td><td class="num">cn</td><td>提示词与内置工具描述的语言：cn / en</td></tr>
+<tr><td><code>MOLE_MAX_ITERATIONS</code></td><td class="num">40</td><td>单轮对话内最多的 ReAct 迭代次数</td></tr>
+<tr><td><code>MOLE_CONFIRM_TOOLS</code></td><td class="num">write_file,edit_file,bash,powershell</td><td>执行前要你确认的工具；留空表示全部自动执行；bash 和 powershell 算一组</td></tr>
+<tr><td><code>MOLE_RESTRICT_TO_PROJECT</code></td><td class="num">true</td><td>文件沙箱开关</td></tr>
+<tr><td><code>MOLE_EXTRA_BASH_DENY</code></td><td class="num">空</td><td>追加的命令拒绝正则，用 <code>;;</code> 分隔，例如 <code>\bkubectl\s+delete\b;;\bterraform\s+destroy\b</code></td></tr>
+<tr><td><code>MOLE_ENABLE_WEB</code></td><td class="num">false</td><td>网页工具</td></tr>
+<tr><td><code>MOLE_ENABLE_CONTEXT_RAILS</code></td><td class="num">true</td><td>上下文压缩与组装</td></tr>
+<tr><td><code>MOLE_ENABLE_SUBAGENTS</code></td><td class="num">true</td><td>子 agent</td></tr>
+<tr><td><code>MOLE_AUDIT_LOG</code></td><td class="num">true</td><td>审计日志</td></tr>
+<tr><td><code>MOLE_SAVE_HISTORY</code></td><td class="num">true</td><td>会话历史和续聊检查点，关掉后两者都不保存</td></tr>
+<tr><td><code>MOLE_HOME</code></td><td class="num">~/.mole-agent</td><td>Mole 的数据目录</td></tr>
+<tr><td><code>MOLE_PROVIDER</code> <code>MOLE_API_BASE</code> <code>MOLE_API_KEY</code> <code>MOLE_MODEL</code></td><td class="num">—</td><td>旧的单模型写法，作为名为 default 的供应商加入目录</td></tr>
+</tbody></table></div>
+
+<h3 id="cli"><span class="num">4.3</span>启动参数</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>参数</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td><code>mole</code></td><td>在当前目录启动对话</td></tr>
+<tr><td><code>-p "指令"</code>, <code>--prompt</code></td><td>执行这一条指令后退出</td></tr>
+<tr><td><code>--project DIR</code></td><td>指定项目目录（默认当前目录）</td></tr>
+<tr><td><code>-m 模型</code>, <code>--model</code></td><td>使用的模型：<code>供应商/模型</code>、<code>供应商</code> 或 <code>模型名</code></td></tr>
+<tr><td><code>--list-models</code></td><td>列出配置的供应商和模型，以及缺哪些环境变量</td></tr>
+<tr><td><code>--check</code></td><td>检查配置并调用一次模型；可配合 <code>-m</code></td></tr>
+<tr><td><code>-c</code>, <code>--continue</code></td><td>继续当前项目最近一个能续聊的会话</td></tr>
+<tr><td><code>-r [序号|会话id]</code>, <code>--resume</code></td><td>选一个历史会话继续；不带参数时列出来选</td></tr>
+<tr><td><code>-y</code>, <code>--yes</code></td><td>所有工具自动执行，不再询问（慎用；命令拦截和沙箱仍然生效）</td></tr>
+<tr><td><code>-v</code>, <code>--verbose</code></td><td>显示思考过程；SDK 日志级别调到 INFO（仍只写入日志文件）</td></tr>
+<tr><td><code>--version</code></td><td>显示版本</td></tr>
+</tbody></table></div>
+
+<h3 id="commands"><span class="num">4.4</span>斜杠命令</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>命令</th><th>作用</th><th>例子</th></tr></thead>
+<tbody>
+<tr><td><code>/help</code></td><td>命令、示例、快捷键说明</td><td></td></tr>
+<tr><td><code>/model [序号|供应商/模型]</code></td><td>切换模型，保留对话上下文；不带参数时列出菜单</td><td><code>/model kimi/kimi-k3</code></td></tr>
+<tr><td><code>/models [供应商]</code></td><td>在线查询供应商当前可用的模型</td><td><code>/models qwen</code></td></tr>
+<tr><td><code>/review [范围或要求]</code></td><td>只读代码检视，默认未提交改动</td><td><code>/review 提交 a1b2c3d</code><br><code>/review 和 main 比</code></td></tr>
+<tr><td><code>/new</code></td><td>新会话，重置用量和「总是允许」</td><td></td></tr>
+<tr><td><code>/history [序号|关键词]</code></td><td>当前项目的历史会话；带关键词时模糊搜索</td><td><code>/history 你好</code><br><code>/history "8080"</code></td></tr>
+<tr><td><code>/resume [序号|关键词|会话id]</code></td><td>回到历史会话继续聊</td><td><code>/resume 登录</code></td></tr>
+<tr><td><code>/usage</code></td><td>本会话的模型调用次数和 token（含子 agent）</td><td></td></tr>
+<tr><td><code>/context</code></td><td>上下文占用、窗口大小、自动压缩阈值</td><td></td></tr>
+<tr><td><code>/compact [要保留的重点]</code></td><td>手动压缩对话上下文</td><td><code>/compact 保留登录模块的改动</code></td></tr>
+<tr><td><code>/exit</code></td><td>退出（别名 <code>/quit</code>、<code>/q</code>）</td><td></td></tr>
+</tbody></table></div>
+<p>输入 <code>/</code> 自动展开命令菜单，继续输入过滤；<kbd>↑</kbd><kbd>↓</kbd> 选择，<kbd>Tab</kbd> 补全，选中后 <kbd>Enter</kbd> 确认、再按一次提交；<kbd>Esc</kbd> 关闭菜单并保留输入。纯数字参数会被当成序号，要按数字搜索就加引号。</p>
+
+<h3 id="interact"><span class="num">4.5</span>对话中的交互</h3>
+<h4>终端符号</h4>
+<div class="legend">
+  <div><span class="sym">●</span><span>绿色：回复文本</span></div>
+  <div><span class="sym">● x(…)</span><span>青色：工具调用及参数摘要</span></div>
+  <div><span class="sym">⎿</span><span>工具结果摘要和耗时</span></div>
+  <div><span class="sym">⊘</span><span>被拦截或被你拒绝</span></div>
+  <div><span class="sym">✗</span><span>失败</span></div>
+  <div><span class="sym">│</span><span>子 agent 的动作</span></div>
+  <div><span class="sym">⟳</span><span>上下文压缩</span></div>
+  <div><span class="sym">?</span><span>需要你的输入</span></div>
+</div>
+<h4>人工确认</h4>
+<div class="codebox"><pre><span class="y">⚠ 请求执行 bash</span>
+<span class="d">  command: npm test</span>
+允许？[Y]是 / [a]本会话总是允许 / [n]否（也可直接输入拒绝理由） › </pre></div>
+<ul>
+  <li>回车或 <code>y</code>：执行这一次。<code>a</code>：本会话内这个工具不再询问（<code>/new</code>、<code>/resume</code> 后重置）。</li>
+  <li><code>n</code>：拒绝。直接输入一句话也是拒绝，这句话会作为理由交给模型，例如「先别动，只看不改」。</li>
+  <li>确认发生在命令拦截之后：已被拦截的命令不会再问你。</li>
+</ul>
+<h4>向你提问（question 工具）</h4>
+<p>需求不明确、有几种做法可选、涉及你的偏好，或者执行中发现情况和预期不一样时，agent 会停下来问你：</p>
+<div class="codebox"><pre><span class="m">? 需要你的输入</span><span class="d">（共 2 个问题）</span>
+
+<span class="c">[数据库]</span> 用哪个数据库？ <span class="d">（单选）</span>
+  <span class="d">1.</span> PostgreSQL (Recommended) <span class="d">- 功能全</span>
+  <span class="d">2.</span> SQLite <span class="d">- 零配置</span>
+  <span class="d">3. 自己输入答案</span>
+输入序号，或直接输入答案；回车跳过 › 1
+
+<span class="c">[功能]</span> 要哪些功能？ <span class="d">（可多选）</span>
+  <span class="d">1.</span> 登录
+  <span class="d">2.</span> 日志
+  <span class="d">3.</span> 缓存
+输入序号，多个用逗号或空格隔开；回车跳过 › 1,3
+<span class="c">● question</span><span class="d">(数据库、功能)</span>
+<span class="d">  ⎿ "用哪个数据库？" = ["PostgreSQL (Recommended)"]
+  ⎿ "要哪些功能？" = ["登录", "缓存"]</span></pre></div>
+<div class="table-wrap"><table>
+<thead><tr><th>你输入</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td><code>2</code></td><td>选第 2 项</td></tr>
+<tr><td><code>1,3</code> · <code>1 3</code> · <code>1、3</code></td><td>多选（只在可多选的问题上有效）</td></tr>
+<tr><td><code>sqlite</code></td><td>直接打选项文字，不区分大小写，可省略 (Recommended)</td></tr>
+<tr><td>任意其他文字</td><td>自定义答案（问题允许自定义时）</td></tr>
+<tr><td>最后一项的序号</td><td>「自己输入答案」，接着再问你答案</td></tr>
+<tr><td>直接回车</td><td>跳过这个问题，agent 会自己拿主意</td></tr>
+</tbody></table></div>
+<ul>
+  <li>输错（单选题填了两个、序号超出范围、不允许自定义时打了文字）会提示原因再问一遍。</li>
+  <li>回答以标签数组交回 agent；中途 <kbd>Ctrl</kbd>+<kbd>C</kbd> 会中断任务，续聊时先把问题重新问一遍。</li>
+  <li>对模型的约定：每个问题要有 <code>question</code>、<code>header</code>、<code>options</code>；<code>multiple</code> 默认 false，<code>custom</code> 默认 true；推荐项放第一个、标签末尾加 (Recommended)；不要自己加「其他」选项。参数不合法时不会打扰你，直接让模型改好再问。</li>
+</ul>
+<h4>打断与退出</h4>
+<ul>
+  <li><kbd>Ctrl</kbd>+<kbd>C</kbd>：取消当前任务，显示 <code>⏹ 已中断</code>，回到输入框。停在确认或提问上时，状态会存下来，续聊时重新问你。</li>
+  <li><kbd>Ctrl</kbd>+<kbd>D</kbd> 或 <code>/exit</code>：退出。</li>
+</ul>
+
+<h3 id="sessions"><span class="num">4.6</span>历史与续聊</h3>
+<p>每个项目的会话单独存放。<code>/history</code> 列出最近 30 个会话（最近活动的在前，标题是第一条输入），输入序号看详情；也可以直接 <code>/history 2</code> 或 <code>/history mole-1a2b</code>（会话 id 前缀）。</p>
+<div class="codebox"><pre>› /history 你好
+<b>搜索「你好」</b> <span class="d">找到 2 个会话 · 最近活动的在前</span>
+<span class="d">   1.</span> 09-24 10:45  <span class="d"> 1 轮 · deepseek/deepseek-flash</span>  修一下登录的 bug
+<span class="d">      回复：…好了，登录失败时会提示原因。顺便跟你说声<span class="y">你好</span>。</span>
+<span class="d">   2.</span> 09-24 10:40  <span class="d"> 1 轮 · deepseek/deepseek-flash</span>  <span class="y">你好</span>
+输入序号查看详情（回车返回） › </pre></div>
+<ul>
+  <li><b>搜索</b>：在标题和全部内容（你的输入、回复、工具摘要、提问的回答）里找，不区分大小写，不要求开头匹配；多个关键词用空格隔开，要都出现才算命中。</li>
+  <li><b>记什么</b>：你的输入（斜杠命令记原样）、回复、每次工具调用一行摘要（成功 / 失败 / 被拦截 / 用户拒绝）、切换模型、中断、出错、压缩提示。子 agent 内部的工具调用不记，只记它交回的结果。</li>
+  <li><b>继续聊</b>：看详情时按 <code>r</code>，或 <code>/resume [序号|关键词]</code>；启动时 <code>mole -c</code> 继续最近的会话，<code>mole -r</code> 先列出来选。agent 记得之前的全部上下文，包括工具调用和结果。</li>
+</ul>
+<div class="codebox"><pre>› /resume 2
+<span class="g">✓ 已回到会话 mole-1a2b3c4d</span><span class="d"> · 3 轮 · 对话上下文已恢复</span>
+<span class="d">  上次问：</span>帮我看看 tools 目录下有哪些工具
+<span class="d">  上次答：</span>tools 目录下有两个工具：git_changes（取代码改动）和 project_overview（仓库概览）。</pre></div>
+<ul>
+  <li>续聊用的是当前选中的模型，不切回原会话的模型；「总是允许」不跟着历史会话走。</li>
+  <li>上次停在确认或提问上的，继续后先重新问你那一步；续聊时新打的那句话不会被当成回答。</li>
+  <li>开启续聊之前的会话只有历史、没有检查点，只能查看。</li>
+  <li><code>MOLE_SAVE_HISTORY=false</code> 同时关掉历史和续聊。历史和检查点里有对话原文，别把 <code>~/.mole-agent/</code> 发给别人。</li>
+  <li>缺 aiosqlite 时续聊不可用，启动会提示，其他功能照常。</li>
+</ul>
+
+<h3 id="context"><span class="num">4.7</span>上下文管理</h3>
+<div class="codebox"><pre>› /context
+<b>上下文</b>  约 38.2k / 200k tokens（19%）
+  ████████░░░░░░░░░░░░░░░░░░░░░░░░│░░░░░░░  <span class="d">到 80%（约 160k）自动压缩</span>
+  <span class="d">窗口</span>  200k<span class="d">（默认值：inner-model 不在 SDK 内置的模型表里）</span>
+  <span class="d">对话</span>  8 轮 · 42 条消息<span class="d">（用户 8 · 助手 17 · 工具结果 17）</span>
+  <span class="d">最近一次请求</span>  系统提示 6.1k · 工具定义 9.8k · 技能 1.2k · 对话 21.1k
+  <span class="d">/compact 手动压缩，可以写上要保留的重点</span></pre></div>
+<ul>
+  <li>竖线 <code>│</code> 标出自动压缩的位置。有模型返回的用量时，占用 = 最后一次用量 + 之后新增消息的估算，和 SDK 判断阈值的口径一致。</li>
+  <li>「窗口」的来源有三种：SDK 内置的模型表、配置指定、默认值 200k。内部模型基本查不到，会显示「默认值」。</li>
+  <li>「最近一次请求」要这次启动后发过消息才有。</li>
+</ul>
+<p><code>/compact</code> 不等到 80% 就先压缩；后面写上要特别保留的内容，会交给压缩模型：</p>
+<div class="codebox"><pre>› /compact 保留登录模块的改动和没做完的待办
+<span class="d">⟳ 正在压缩上下文（42 条消息，对话约 21.1k tokens，重点保留：保留登录模块的改动和没做完的待办）…</span> <span class="g">完成</span>，42 → 6 条消息，对话约 21.1k → 3.4k tokens（省 84%）</pre></div>
+<p>对话过程中的自动压缩也会提示一行：</p>
+<div class="codebox"><pre><span class="d">  ⟳ 上下文已压缩：对话约 152.3k → 18.6k tokens（省 88%）
+  ⟳ 模型报上下文超长，已压缩上下文：对话约 30.1k → 6.2k tokens（省 79%），重试中</span>
+<span class="y">  ⚠ 上下文压缩失败，上下文保持原样：HTTPStatusError: … 400 …（网关只接受流式请求的话，在 models.toml 里给这个供应商加上 stream_only = true）</span></pre></div>
+<ul>
+  <li>压缩结果写回检查点，重启后续聊拿到的也是压缩后的上下文；<code>/compact</code> 执行中可以 <kbd>Ctrl</kbd>+<kbd>C</kbd> 取消，上下文不变。</li>
+  <li>压缩要调一次模型，超过 1 秒会先显示「正在压缩…」，完成后接在同一行后面。同一个失败原因一轮只提示一次。</li>
+  <li>压缩用的是<b>启动时</b>的模型，<code>/model</code> 切换后不变；stream_only 也按启动时的供应商。</li>
+  <li>续聊回来还没发消息时不能 <code>/compact</code>（压缩器要到第一次对话时才装上），先聊一句即可；快满时发消息也会先自动压缩。</li>
+  <li><code>MOLE_ENABLE_CONTEXT_RAILS=false</code> 关闭压缩，<code>/context</code> 会显示「自动压缩没有开启」。</li>
+</ul>
+
+<h3 id="review"><span class="num">4.8</span>代码检视</h3>
+<div class="codebox"><pre class="cmd">/review                      <span class="cm"># 检视未提交改动</span>
+/review 提交 a1b2c3d          <span class="cm"># 某个提交</span>
+/review 和 main 比            <span class="cm"># 当前分支相对 main 的全部改动</span>
+/review mole_agent/cli.py    <span class="cm"># 指定文件，按整份代码检视</span></pre></div>
+<ul>
+  <li>有 code_reviewer 子 agent 时，<code>/review</code> 让主 agent 通过 task_tool 交给它，读 diff 和上下文不占主对话；报告原样转述给你，不改任何文件。</li>
+  <li>项目里有 code-review 技能时按技能执行。Mole 仓库自带 <code>.mole/skills/code-review/</code>：SKILL.md 定流程和输出格式，references 里是本项目约定和细项清单。</li>
+  <li>结果按「阻塞 / 建议 / 可选」分级，每条带 <code>路径:行号</code>、影响和修改建议，最后给出合入结论。</li>
+  <li>也可以直接说「检视一下我的改动」。</li>
+</ul>
+
+<h3 id="extend"><span class="num">4.9</span>扩展 Mole</h3>
+<h4>加一个工具</h4>
+<p>复制 <code>mole_agent/tools/_template.py</code> 为 <code>&lt;工具名&gt;.py</code>（文件名与工具名一致），实现 <code>create(settings) -&gt; Tool</code>，重启即可，不用改其他文件。</p>
+<ul>
+  <li>需要按配置开关时加 <code>enabled(settings) -&gt; bool</code>。</li>
+  <li>不写文件、不改状态的工具加 <code>READ_ONLY = True</code>，只读子 agent 才会拿到它。</li>
+  <li><code>description</code> 写清「做什么、什么时候该用」；参数写成 JSON Schema，给默认值和说明。</li>
+  <li>阻塞 IO 放进 <code>asyncio.to_thread</code>，子进程带 timeout；路径经过 <code>resolve_inside</code> 限制在项目内；输出用 <code>truncate</code> 截断。</li>
+  <li>缺 <code>create</code>、工具名重复、<code>create</code> 报错时，启动直接报出是哪个文件。</li>
+</ul>
+<h4>加一个子 agent</h4>
+<p>在 <code>mole_agent/subagents/</code> 新建 <code>&lt;子agent名&gt;.py</code>，实现 <code>create(env: SubagentEnv) -&gt; SubAgentConfig</code>：rails 用 <code>env.read_only_rails(名字)</code>，工具用 <code>env.tools()</code>，模型用 <code>env.model_for(名字)</code>，再传 <code>workspace=env.workspace(名字)</code> 和 <code>sys_operation=env.sys_operation</code>。<code>agent_card.description</code> 写清什么时候派给它、task_description 写什么。参考 <code>code_reviewer.py</code>。</p>
+<div class="warn"><b>子 agent 必须只读。</b>task_tool 在内部运行子 agent，子 agent 触发的确认和提问传不到终端（openjiuwen 0.1.18）。不要给它挂 ApprovalRail、QuestionRail 或写文件工具。</div>
+<h4>加一个 rail</h4>
+<p>在 <code>rails.py</code> 继承 <code>AgentRail</code>，覆写需要的钩子（<code>before_model_call</code>、<code>after_tool_call</code> 等），显式设 <code>priority</code> 并注释为什么排在谁前后，然后挂进 <code>agent.py</code> 的 rails 列表。要拦截并裁决工具调用就继承 <code>BaseInterruptRail</code>，在 <code>resolve_interrupt</code> 里返回 <code>approve()</code>、<code>reject(...)</code> 或 <code>interrupt(...)</code>。</p>
+<h4>加一个斜杠命令</h4>
+<p>在 <code>mole_agent/commands/__init__.py</code> 的 <code>default_registry()</code> 里注册 <code>CommandSpec</code>：名称、说明、异步处理函数，按需加用法、别名、示例、参数补全、可用性判断。菜单、帮助、分发自动读取；需要运行时能力时在 <code>cli.py</code> 的 <code>Repl.command_context()</code> 接入。设计取舍见仓库里的 <code>docs/slash-command-architecture.md</code>。</p>
+<h4>加技能</h4>
+<p><code>SKILL.md</code> 放到 <code>&lt;项目&gt;/.mole/skills/&lt;名字&gt;/</code>（只在该项目生效）或 <code>~/.mole-agent/skills/&lt;名字&gt;/</code>（所有项目共用），格式与 Claude Code skills 一致，也可以软链接 <code>~/.claude/skills</code> 里的技能。技能目录会自动加入文件沙箱，<code>references/</code>、<code>scripts/</code> 都能读到。新增、修改技能不用重启（会话中途新增的 <code>/new</code> 后生效）；启动后新建的软链接要重启才加入沙箱。示例见 <code>examples/skills/commit-message/</code>。</p>
+<h4>接 MCP 服务</h4>
+<div class="codebox"><span class="label">.mcp.json</span><pre class="cmd">{"mcpServers": {
+  "fs":     {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]},
+  "remote": {"type": "http", "url": "http://mcp.internal/mcp", "headers": {"Authorization": "Bearer xxx"}}
+}}</pre></div>
+<p>放在项目根目录（优先）或 <code>~/.mole-agent/mcp.json</code>。支持 stdio、<code>sse</code>、<code>http</code> / <code>streamable-http</code>；<code>"disabled": true</code> 跳过某个服务。</p>
+<h4>项目约定</h4>
+<p>在项目根目录写 <code>MOLE.md</code>（也兼容 <code>AGENTS.md</code>、<code>CLAUDE.md</code>、<code>OPENJIUWEN.md</code>），启动时注入系统提示词，最多 2 万字。</p>
+
+<h3 id="diagnose"><span class="num">4.10</span>连不上模型</h3>
+<p>先跑 <code>mole --check</code>。前几行说明实际用的是哪个供应商、哪种鉴权、是否只走流式、哪份 <code>models.toml</code>；调用失败时打出异常链（最后一行是根因），连接类错误还会按 openjiuwen 的实际行为逐步检查，把这段输出发给维护者即可。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>诊断里的 ✗</th><th>原因与处理</th></tr></thead>
+<tbody>
+<tr><td>会走代理 / 连接代理失败 / CONNECT 403、502</td><td>终端里设了 <code>http_proxy</code> 等代理变量，内网地址也发给了代理。把域名加进 <code>NO_PROXY</code>，要带前导点：<code>.inner.example.com</code></td></tr>
+<tr><td>NO_PROXY 写法</td><td>openjiuwen 比 curl 严：<code>example.com</code> 不包含子域名，<code>*.example.com</code> 不支持；它还优先用 <code>http_proxy</code>（即使地址是 https）。httpx 另外会读 <code>ALL_PROXY</code></td></tr>
+<tr><td>DNS 解析失败 / TCP 超时</td><td>不在内网、没连 VPN，或所在网络到不了这个地址</td></tr>
+<tr><td>证书校验失败</td><td>服务用公司内部 CA 的证书而本机 Python 不信任它。python.org 安装的 Python 先运行「Install Certificates.command」；可把内部根证书加入信任库，或在供应商下临时写 <code>verify_ssl = false</code></td></tr>
+<tr><td>TLS 协商失败</td><td>openjiuwen 只允许 TLS1.2+，TLS1.2 下只允许 ECDHE + AES-GCM 套件；诊断会对比 Python 默认配置能否握手</td></tr>
+<tr><td><code>'AsyncStream' object has no attribute 'choices'</code></td><td>往请求参数里加了 <code>stream=True</code>。去掉它，改在供应商下写 <code>stream_only = true</code></td></tr>
+<tr><td>400，提示只支持流式</td><td>网关只收流式请求：供应商下加 <code>stream_only = true</code></td></tr>
+</tbody></table></div>
+<p class="muted">注意 <code>~/.mole-agent/models.toml</code> 优先于仓库里的，<code>~/.mole-agent/state.json</code> 会记住上次 <code>/model</code> 选的模型。</p>
+
+<h3 id="files"><span class="num">4.11</span>文件位置</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>路径</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td><code>~/.mole-agent/.env</code></td><td>可选的全局配置（优先级低于仓库根目录的 .env 和环境变量）</td></tr>
+<tr><td><code>~/.mole-agent/models.toml</code></td><td>可选的全局供应商配置（优先于仓库里的 models.toml）</td></tr>
+<tr><td><code>~/.mole-agent/state.json</code></td><td>上次 <code>/model</code> 切换到的模型</td></tr>
+<tr><td><code>~/.mole-agent/workspace/</code></td><td>agent 私有工作区，与项目目录隔离</td></tr>
+<tr><td><code>~/.mole-agent/logs/</code></td><td>SDK 日志</td></tr>
+<tr><td><code>~/.mole-agent/audit.jsonl</code></td><td>工具调用审计</td></tr>
+<tr><td><code>~/.mole-agent/history</code></td><td>输入框历史</td></tr>
+<tr><td><code>~/.mole-agent/sessions/</code></td><td>会话历史，每个项目一个子目录</td></tr>
+<tr><td><code>~/.mole-agent/checkpoints.db</code></td><td>续聊用的对话上下文</td></tr>
+<tr><td><code>~/.mole-agent/skills/</code> · <code>mcp.json</code></td><td>用户级技能和 MCP 配置</td></tr>
+<tr><td><code>&lt;项目&gt;/MOLE.md</code> · <code>.mole/skills/</code> · <code>.mcp.json</code></td><td>项目级约定、技能、MCP 配置</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="security">
+<h2><span class="num">05</span>安全模型</h2>
+<p>几道防线互相独立：拦截不依赖你的确认，确认不依赖模型自觉，沙箱不依赖前两者。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>层</th><th>机制</th><th>配置</th></tr></thead>
+<tbody>
+<tr><td>文件沙箱</td><td>文件工具和命令里引用的路径只能落在项目目录、agent 工作区、技能目录（含软链接指向的目录）</td><td><code>MOLE_RESTRICT_TO_PROJECT</code></td></tr>
+<tr><td>命令拦截</td><td><code>CommandGuardRail</code> 对 bash 和 powershell 执行拒绝规则，命中直接驳回；命令先按 <code>|</code> <code>&amp;&amp;</code> <code>||</code> <code>;</code>、单个 <code>&amp;</code> 和换行切成子命令再逐段检查</td><td><code>MOLE_EXTRA_BASH_DENY</code></td></tr>
+<tr><td>人工确认</td><td><code>ApprovalRail</code>：写文件、改文件、执行命令前询问；bash 和 powershell 算一组</td><td><code>MOLE_CONFIRM_TOOLS</code>，<code>-y</code> 关闭</td></tr>
+<tr><td>子 agent 只读</td><td>没有写文件工具和 question；bash 经 <code>ReadOnlyShellRail</code> 只放行白名单命令，powershell 一律拒绝；不挂人工确认</td><td><code>rails.read_only_violation</code></td></tr>
+<tr><td>审计</td><td>每次工具调用一行 JSONL：时间、项目、agent、工具、参数、是否成功、裁决（executed / rejected_by_guard / rejected_by_user）、耗时、结果前 500 字</td><td><code>MOLE_AUDIT_LOG</code></td></tr>
+<tr><td>密钥</td><td>key 和 token 只来自环境变量或 .env（已被 git 忽略）；<code>--check</code> 只显示请求头名字</td><td><code>api_key_env</code>、<code>${变量}</code></td></tr>
+</tbody></table></div>
+
+<h4>内置拒绝规则</h4>
+<div class="table-wrap"><table>
+<thead><tr><th>拦下的操作</th><th>例子</th></tr></thead>
+<tbody>
+<tr><td>删除根目录或家目录</td><td><code>rm -rf /</code>、<code>rm -rf ~</code>、<code>rm -rf $HOME</code></td></tr>
+<tr><td>提权</td><td><code>sudo …</code></td></tr>
+<tr><td>格式化、覆写块设备</td><td><code>mkfs.ext4</code>、<code>dd … of=/dev/sda</code></td></tr>
+<tr><td>关机重启</td><td><code>shutdown</code>、<code>reboot</code>、<code>halt</code>、<code>poweroff</code></td></tr>
+<tr><td>管道执行下载的脚本</td><td><code>curl … | sh</code>（拦的是管道右侧的 sh / bash）</td></tr>
+<tr><td>强推、丢弃本地修改</td><td><code>git push --force</code>、<code>git push -f</code>、<code>git reset --hard</code></td></tr>
+<tr><td>全盘放权、fork 炸弹</td><td><code>chmod -R 777 /</code>、<code>:(){ :|:&amp; };:</code></td></tr>
+<tr><td>Windows 关机、格式化、清盘</td><td><code>Stop-Computer</code>、<code>Format-Volume</code>、<code>Clear-Disk</code>、<code>format C:</code></td></tr>
+<tr><td>Windows 执行下载的脚本</td><td><code>iwr … | iex</code>、<code>Invoke-Expression</code></td></tr>
+<tr><td>Windows 删整个盘或用户目录</td><td><code>Remove-Item C:\ -Recurse</code>、<code>del $env:USERPROFILE</code></td></tr>
+</tbody></table></div>
+<div class="note">SDK 的 BashTool 自带 deny_patterns，但只在环境变量 <code>OPENJIUWEN_BASH_STRICT=1</code> 时生效，所以 Mole 在 rail 层统一兜底。</div>
+
+<h4>子 agent 的只读 shell</h4>
+<ul>
+  <li>放行的命令：<code>ls</code> <code>cat</code> <code>head</code> <code>tail</code> <code>wc</code> <code>grep</code> <code>egrep</code> <code>fgrep</code> <code>rg</code> <code>find</code> <code>pwd</code> <code>echo</code> <code>file</code> <code>stat</code> <code>du</code> <code>sort</code> <code>cut</code> <code>diff</code> <code>which</code> <code>basename</code> <code>dirname</code>，以及 Windows 的 <code>dir</code> <code>type</code> <code>tree</code> <code>where</code> <code>findstr</code>。</li>
+  <li>git 只放行只读子命令：<code>status</code> <code>diff</code> <code>log</code> <code>show</code> <code>blame</code> <code>grep</code> <code>ls-files</code> <code>ls-tree</code> <code>rev-parse</code> <code>describe</code> <code>shortlog</code> <code>cat-file</code> <code>merge-base</code> <code>rev-list</code> <code>branch</code>。</li>
+  <li>白名单命令里能写文件或执行程序的参数单独拦掉：<code>find -delete / -exec</code>、<code>sort -o</code>、<code>rg --pre</code> 等；输出重定向、命令替换、单个 <code>&amp;</code>、设置环境变量也会被拒。</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">06</span>测试</h2>
+<div class="codebox"><pre class="cmd">pytest -q        <span class="cm"># 不联网、不需要 API key；258 个用例</span></pre></div>
+<p>端到端测试用 pip 装好的 openjiuwen SDK 加一个按剧本回复的假模型（<code>ScriptedModel</code>），跑真实的 agent 流程；网络相关的用例起本机临时服务。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>文件</th><th>用例</th><th>覆盖</th></tr></thead>
+<tbody>
+<tr><td><code>test_subagents.py</code></td><td class="num">53</td><td>只读 shell 放行 / 拦截用例表、git_changes 的范围、子 agent 自动发现与只读配置、<code>[subagents]</code> 选模型、主 agent → task_tool → code_reviewer 端到端</td></tr>
+<tr><td><code>test_windows.py</code></td><td class="num">50</td><td>powershell 受确认 / 拦截 / 只读守卫约束、Windows 危险命令用例表、<code>&amp;</code> 和换行不能绕过检查、Ctrl+C 兜底</td></tr>
+<tr><td><code>test_offline.py</code></td><td class="num">39</td><td>自定义工具、命令拒绝规则、提示词、配置、MCP 解析、agent 组装</td></tr>
+<tr><td><code>test_question.py</code></td><td class="num">18</td><td>question 的常驻声明、参数校验、单选 / 多选 / 自定义 / 跳过的输入解析、问答后继续、输错重问、中断后续聊重新提问</td></tr>
+<tr><td><code>test_history.py</code></td><td class="num">13</td><td>SDK 的文件格式、按项目分目录、列表与详情、关键词模糊搜索、各种事件都记下</td></tr>
+<tr><td><code>test_netcheck.py</code></td><td class="num">13</td><td>异常链、openjiuwen 与 httpx 的代理差异、NO_PROXY 写法、DNS / TCP / CONNECT / 证书 / 加密套件</td></tr>
+<tr><td><code>test_context.py</code></td><td class="num">12</td><td><code>/context</code>、<code>/compact</code>（保留要求、失败原因、重启后仍有效）、压缩提示、超长后压缩重试（英文 / 中文）</td></tr>
+<tr><td><code>test_models.py</code></td><td class="num">11</td><td>models.toml 解析、模型选择规则、启动优先级、供应商级参数</td></tr>
+<tr><td><code>test_commands.py</code></td><td class="num">9</td><td>命令注册与别名冲突、分发、补全、输入框按键、帮助</td></tr>
+<tr><td><code>test_header_auth.py</code></td><td class="num">9</td><td>请求头鉴权：对话、流式、<code>--check</code>、<code>/models</code> 都带上请求头且没有 Authorization</td></tr>
+<tr><td><code>test_resume.py</code></td><td class="num">8</td><td>两次「重启」之间恢复上下文、<code>mole -c</code>、待确认操作重新询问、旧会话被拒、缺 aiosqlite 降级</td></tr>
+<tr><td><code>test_tools.py</code></td><td class="num">8</td><td>tools/ 目录约定：自动发现、模板可用、写错时的报错</td></tr>
+<tr><td><code>test_stream_only.py</code></td><td class="num">7</td><td>拒绝非流式请求的假网关：<code>--check</code>、解析器、工具调用、上下文压缩都走流式</td></tr>
+<tr><td><code>test_skills.py</code></td><td class="num">5</td><td>技能格式检查、项目级 / 用户级 / 软链接技能、沙箱外仍被拦截</td></tr>
+<tr><td><code>test_e2e_fake_llm.py</code></td><td class="num">3</td><td>完整流程：工具调用、确认 / 拒绝 / 总是允许、危险命令拦截、沙箱、审计、多轮上下文、运行中切换模型</td></tr>
+</tbody></table></div>
+<p class="muted">真实模型用 <code>mole --check</code> 验证连通性。</p>
+</section>
+
+<section id="limits">
+<h2><span class="num">07</span>已知限制</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>限制</th><th>影响与应对</th></tr></thead>
+<tbody>
+<tr><td>压缩固定用启动时的模型</td><td><code>/model</code> 切换后仍用启动时的模型和网关做压缩；stream_only 也按启动时的供应商判断</td></tr>
+<tr><td>内部模型的窗口按 200k 算</td><td>模型名不在 SDK 内置表里时用默认值；实际窗口更小时要等接口报超长才压缩（会压缩后重试一次）</td></tr>
+<tr><td>超长只重试一次</td><td>压缩后仍放不下会报错，提示用 <code>/compact</code> 或 <code>/new</code>；流式输出已经开始时不重试</td></tr>
+<tr><td>续聊后首条消息前不能 <code>/compact</code></td><td>rails 要到第一次对话才初始化；先聊一句即可</td></tr>
+<tr><td>子 agent 不能确认和提问</td><td>task_tool 内部的中断传不到终端（openjiuwen 0.1.18），所以子 agent 只读，范围不明确时写明假设</td></tr>
+<tr><td>旧会话不能续聊</td><td>开启续聊之前的会话只有历史、没有检查点</td></tr>
+<tr><td>会话参数没有补全</td><td><code>/history</code>、<code>/resume</code> 的序号或 id 要手动输入</td></tr>
+<tr><td>NO_PROXY 规则严格</td><td>openjiuwen 不支持通配符、不含子域名，要写成 <code>.example.com</code></td></tr>
+<tr><td>SDK 打包缺陷</td><td>openjiuwen 0.1.18.x 会无条件导入 opentelemetry-sdk，Mole 显式依赖它</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="changelog">
+<h2><span class="num">08</span>演进记录</h2>
+<ol class="timeline">
+  <li><span class="meta">2026-09-23 · bc7f091</span><br>初版：DeepAgent 装配、自定义工具、命令拦截与人工确认、models.toml 多供应商、审计</li>
+  <li><span class="meta">2026-09-23 · 974489c</span><br>子 agent（explore_agent、code_reviewer）与 ModelArts 请求头鉴权；忽略 IDE 文件</li>
+  <li><span class="meta">2026-09-23 · 8443199</span><br>适配 Windows；修复命令检查可被 <code>&amp;</code> 和换行绕过的问题</li>
+  <li><span class="meta">2026-09-23 · 64f97fc</span><br>支持只接受流式请求的网关（stream_only）</li>
+  <li><span class="meta">2026-09-23 · 1048888</span><br><code>mole --check</code> 失败时输出异常链和网络诊断</li>
+  <li><span class="meta">2026-09-23 · c5c7bf1</span><br>收窄 .gitignore 的密钥规则</li>
+  <li><span class="meta">2026-09-23 · 2304e84（Miracle778）</span><br>斜杠命令注册表与交互式补全</li>
+  <li><span class="meta">2026-09-24 · 9e04f27</span><br>会话历史 <code>/history</code>、续聊 <code>/resume</code> 和 <code>mole -c</code></li>
+  <li><span class="meta">2026-09-24 · b42bb46</span><br>合入 PR #1：命令系统与历史会话命令整合，斜杠命令架构文档</li>
+  <li><span class="meta">2026-09-24 · 701a576</span><br><code>/history</code> 按标题和内容模糊搜索</li>
+  <li><span class="meta">2026-09-24 · baf9aa0</span><br>上下文管理：<code>/context</code>、<code>/compact</code>、压缩提示、流式网关压缩、中文超长报错</li>
+  <li class="pending"><span class="meta">未提交</span><br>常驻 question 工具，替换 SDK 的 ask_user</li>
+</ol>
+</section>
+
+<footer>Mole 架构与使用手册 · 依据 mole-agent 0.4.1（main <code>baf9aa0</code> + 未提交的 question 工具改动）整理 · 2026-09-24</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  // 命令块加复制按钮
+  document.querySelectorAll("pre.cmd").forEach(function (pre) {
+    var box = pre.parentElement;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copy";
+    btn.textContent = "复制";
+    btn.addEventListener("click", function () {
+      var text = pre.innerText.replace(/\s+#.*$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+      var done = function () { btn.textContent = "已复制"; setTimeout(function () { btn.textContent = "复制"; }, 1500); };
+      var fallback = function () {
+        var range = document.createRange(); range.selectNodeContents(pre);
+        var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+        btn.textContent = "已选中，按 Ctrl+C";
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, fallback);
+        } else { fallback(); }
+      } catch (e) { fallback(); }
+    });
+    box.appendChild(btn);
+  });
+
+  // 窄屏默认收起目录，点目录项后收起
+  var details = document.getElementById("toc-details");
+  var narrow = window.matchMedia("(max-width: 1000px)");
+  if (narrow.matches) details.removeAttribute("open");
+  document.querySelectorAll(".toc a").forEach(function (a) {
+    a.addEventListener("click", function () { if (narrow.matches) details.removeAttribute("open"); });
+  });
+
+  // 目录高亮当前章节
+  var links = {};
+  document.querySelectorAll(".toc a").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
+  var targets = Array.prototype.slice.call(document.querySelectorAll("section[id], h3[id]"));
+  if (!("IntersectionObserver" in window)) return;
+  var current = null;
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting && links[e.target.id]) {
+        if (current) current.classList.remove("active");
+        current = links[e.target.id];
+        current.classList.add("active");
+      }
+    });
+  }, { rootMargin: "0px 0px -70% 0px", threshold: 0 });
+  targets.forEach(function (t) { io.observe(t); });
+})();
+</script>
+</body>
+</html>
