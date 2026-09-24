@@ -33,15 +33,16 @@ from openjiuwen.harness import create_deep_agent
 from openjiuwen.harness.rails import AskUserRail, SkillUseRail, SysOperationRail
 from openjiuwen.harness.workspace.workspace import Workspace
 
-from mole_agent.config import Settings
+from mole_agent.config import AGENT_ID, Settings
+from mole_agent.context import CompressionWatcher, extend_overflow_detection
 from mole_agent.models import ModelChoice, ModelSelectionError
 from mole_agent.prompts import build_system_prompt
-from mole_agent.rails import ActivityFeed, ApprovalRail, CommandGuardRail, TokenUsageRail, ToolTraceRail
+from mole_agent.rails import (
+    ActivityFeed, ApprovalRail, CommandGuardRail, CompressionRail, TokenUsageRail, ToolTraceRail,
+)
 from mole_agent.tools import build_custom_tools
 
 log = logging.getLogger("mole_agent")
-
-AGENT_ID = "mole_agent"  # 固定 id：checkpointer / sys_operation 等以它为键，重启后保持一致
 
 
 @dataclass
@@ -53,35 +54,94 @@ class AgentBundle:
     subagents: dict[str, str] = field(default_factory=dict)   # 子 agent 名 → 使用的模型（显示用）
     activity: ActivityFeed = field(default_factory=ActivityFeed)  # 子 agent 的工具调用，终端订阅显示
     warnings: list[str] = field(default_factory=list)
+    compression: CompressionWatcher | None = None  # 上下文压缩器的适配与失败记录；没开压缩时为 None
+
+
+async def collect_stream(chunks: Any, output_parser: Any = None) -> AssistantMessage:
+    """把流式分片拼成一条完整回复，行为与 SDK 的非流式 invoke 一致（解析失败时 parser_content 为 None）。"""
+    merged: Optional[AssistantMessageChunk] = None
+    async for chunk in chunks:
+        if isinstance(chunk, AssistantMessageChunk):
+            merged = chunk if merged is None else merged + chunk
+    if merged is None:
+        return AssistantMessage(content="", tool_calls=[])
+    fields = {k: getattr(merged, k) for k in AssistantMessage.model_fields if hasattr(merged, k)}
+    fields["tool_calls"] = merged.tool_calls or []
+    if "parser_content" in AssistantMessage.model_fields:
+        fields["parser_content"] = None
+    message = AssistantMessage(**fields)
+    if output_parser is not None and message.content:
+        try:
+            message.parser_content = await output_parser.parse(message.content)
+        except Exception:  # noqa: BLE001
+            log.warning("流式拼接后的回复解析失败（output_parser=%s）", output_parser)
+    return message
 
 
 class StreamOnlyModel(Model):
     """给只接受流式请求（stream=true）的模型网关用：invoke 也走流式，在本地把分片拼成完整回复。
 
-    agent 主循环本来就用 stream()；但 SDK 里还有不少地方用 invoke()（任务完成判断、上下文压缩、
-    图片能力探测，以及 mole --check），非流式请求会被这类网关拒绝。
+    agent 主循环本来就用 stream()；但 SDK 里还有不少地方用 invoke()（任务完成判断、图片能力探测，
+    以及 mole --check），非流式请求会被这类网关拒绝。上下文压缩器不用这个对象，它按配置自己建模型客户端，
+    见 stream_only_client_config。
     注意不要把 stream=True 写进 ModelRequestConfig：它会被原样塞进 invoke 的请求参数，
     OpenAI SDK 于是返回流对象，而 invoke 按完整回复去解析，报 'AsyncStream' object has no attribute 'choices'。
     """
 
     async def invoke(self, messages, *, output_parser=None, **kwargs) -> AssistantMessage:
-        merged: Optional[AssistantMessageChunk] = None
-        async for chunk in self.stream(messages, **kwargs):
-            if isinstance(chunk, AssistantMessageChunk):
-                merged = chunk if merged is None else merged + chunk
-        if merged is None:
-            return AssistantMessage(content="", tool_calls=[])
-        fields = {k: getattr(merged, k) for k in AssistantMessage.model_fields if hasattr(merged, k)}
-        fields["tool_calls"] = merged.tool_calls or []
-        if "parser_content" in AssistantMessage.model_fields:
-            fields["parser_content"] = None
-        message = AssistantMessage(**fields)
-        if output_parser is not None and message.content:
-            try:  # 与 SDK 非流式 invoke 一致：解析失败时 parser_content 为 None
-                message.parser_content = await output_parser.parse(message.content)
-            except Exception:  # noqa: BLE001
-                log.warning("流式拼接后的回复解析失败（output_parser=%s）", output_parser)
-        return message
+        return await collect_stream(self.stream(messages, **kwargs), output_parser)
+
+
+# --------------------------------------------------------------------------- #
+# 只走流式的模型客户端（给上下文压缩器用）
+# --------------------------------------------------------------------------- #
+# 压缩器按 ContextProcessorRail 放进 ReActAgent 配置里的 model_client（ModelClientConfig）自己建 Model，
+# 调的是非流式 invoke。在 SDK 的客户端注册表里登记一个 client_provider，把这份配置换成它：
+# 建出来的客户端里面还是 SDK 按原配置建的客户端，只是 invoke 改成流式拼接。全程只用公开接口。
+STREAM_ONLY_PROVIDER = "mole_stream_only"
+_WRAPPED_CLIENT_CONFIGS: dict[str, ModelClientConfig] = {}   # 包装后配置的 client_id → 原配置
+
+
+class StreamOnlyClient:
+    """包在 SDK 模型客户端外面：stream 原样转发，invoke 用 stream 拼成完整回复，其余属性都转给里面的客户端。"""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    async def stream(self, *args: Any, **kwargs: Any) -> Any:
+        async for chunk in self.inner.stream(*args, **kwargs):
+            yield chunk
+
+    async def invoke(self, *args: Any, output_parser: Any = None, **kwargs: Any) -> AssistantMessage:
+        return await collect_stream(self.stream(*args, **kwargs), output_parser)
+
+
+def _register_stream_only_client() -> None:
+    from openjiuwen.core.common.clients import get_client_registry
+
+    registry = get_client_registry()
+    if f"llm_{STREAM_ONLY_PROVIDER}" in registry.list_clients():
+        return
+
+    @registry.register_client(STREAM_ONLY_PROVIDER, client_type="llm")
+    def create(model_config: Any = None, model_client_config: Any = None, **_: Any) -> StreamOnlyClient:
+        from openjiuwen.core.foundation.llm.model_clients import create_model_client
+
+        original = _WRAPPED_CLIENT_CONFIGS[model_client_config.client_id]
+        return StreamOnlyClient(create_model_client(client_config=original, model_config=model_config))
+
+
+def stream_only_client_config(original: ModelClientConfig) -> ModelClientConfig:
+    """同一份客户端配置，换成只走流式的客户端。已经换过的原样返回。"""
+    if original.client_provider == STREAM_ONLY_PROVIDER:
+        return original
+    _register_stream_only_client()
+    wrapped = original.model_copy(update={"client_provider": STREAM_ONLY_PROVIDER})
+    _WRAPPED_CLIENT_CONFIGS[wrapped.client_id] = original
+    return wrapped
 
 
 # models.toml 的 auth → openjiuwen 的鉴权方式；api_key 是 SDK 默认值，不显式传
@@ -122,7 +182,8 @@ def switch_model(bundle: "AgentBundle", settings: Settings, choice: ModelChoice)
     只替换 DeepAgent 内层 ReActAgent 的 LLM 与模型元数据（全部走公开接口：
     react_agent / set_llm / config / update_model_context），不重建 agent，
     所以对话历史、rails、工具、「总是允许」记录都保持不变。
-    注意：上下文压缩（ContextProcessorRail）在启动时固定了所用模型，切换后仍用启动时的模型做压缩。
+    注意：上下文压缩（ContextProcessorRail）在启动时固定了所用模型，切换后仍用启动时的模型做压缩
+    （是否只走流式也按启动时的供应商）。
     """
     problems = choice.provider.problems()
     if problems:
@@ -295,12 +356,16 @@ def build_agent(settings: Settings) -> AgentBundle:
         approval = ApprovalRail(tool_names=settings.confirm_tools)
         rails.append(approval)
 
+    compression: CompressionWatcher | None = None
     if settings.enable_context_rails:
-        try:  # 上下文窗口管理：长对话自动压缩
+        try:  # 上下文窗口管理：长对话自动压缩，模型报超长时压缩后重试（见 context.py）
             from openjiuwen.harness.rails.context_engineer import ContextAssembleRail, ContextProcessorRail
-            rails += [ContextProcessorRail(preset=True), ContextAssembleRail()]
         except ImportError:
             log.info("当前 openjiuwen 版本没有 context_engineer rails，已跳过")
+        else:
+            compression = CompressionWatcher(stream_only=settings.stream_only)
+            wrapper = stream_only_client_config if settings.stream_only else None  # 压缩用启动时的模型，按它判断
+            rails += [ContextProcessorRail(preset=True), ContextAssembleRail(), CompressionRail(compression, wrapper)]
 
     tools: list[Any] = build_custom_tools(settings)
     if settings.enable_web:
@@ -332,7 +397,9 @@ def build_agent(settings: Settings) -> AgentBundle:
         cwd=str(settings.project_dir),
         project_root=str(settings.project_dir),
     )
+    if compression is not None and agent.react_agent is not None:
+        extend_overflow_detection(agent.react_agent.context_engine)
     return AgentBundle(
         agent=agent, usage=usage, approval=approval, mcp_names=[c.server_name for c in mcps],
-        subagents=subagent_models, activity=activity, warnings=warnings,
+        subagents=subagent_models, activity=activity, warnings=warnings, compression=compression,
     )

@@ -26,7 +26,8 @@ from rich.markup import escape as esc
 from rich.panel import Panel
 
 from mole_agent import __version__
-from mole_agent.config import Settings, load_settings
+from mole_agent.config import AGENT_ID, Settings, load_settings
+from mole_agent.context import OFFLOADERS, failure_hint, fmt_tokens, is_zh_context_overflow
 from mole_agent.models import ModelChoice, ModelSelectionError, list_remote_models, save_last_model
 
 from mole_agent.commands import (
@@ -129,16 +130,40 @@ class Pending:
     request: Any
 
 
+# 调模型的压缩器：压缩要等一次模型调用，超过这个时间还没结束就先提示「正在压缩…」
+_LLM_COMPRESSORS = frozenset({"DialogueCompressor", "CurrentRoundCompressor", "RoundLevelCompressor",
+                              "SessionMemoryCompressor"})
+COMPRESSING_HINT_DELAY = 1.0
+
+
+@dataclass
+class _CompressionBatch:
+    """连续的一串 context.compression_state 事件（SDK 按处理器逐个尝试），合成终端里的一行。"""
+    phase: str
+    before: int
+    after: int
+    changed: bool = False
+    processors: set[str] = field(default_factory=set)
+    errors: list[str] = field(default_factory=list)
+    shown: bool = False          # 「正在压缩…」已经打出来了（这一行还没换行）
+    timer: Any = None
+
+
 @dataclass
 class StreamRenderer:
     verbose: bool = False
+    compression: Any = None      # context.CompressionWatcher：查压缩失败的原因
     pending: list[Pending] = field(default_factory=list)
     text_parts: list[str] = field(default_factory=list)
     # 按出现顺序记下回复文本和工具结果，写进会话历史：("assistant", 文本) / ("tool", payload)
     transcript: list[tuple[str, Any]] = field(default_factory=list)
+    last_usage: Any = None       # 最近一次 context.usage 事件（每次请求的各部分大小），/context 用
+    compression_notes: list[str] = field(default_factory=list)   # 这轮里的压缩提示，写进会话历史
+    _reported_failures: set[str] = field(default_factory=set)    # 同一个失败原因一轮只提示一次（每次调模型都会重试压缩）
     _segment: list[str] = field(default_factory=list)
     _in_text: bool = False
     _saw_llm_output: bool = False
+    _batch: Any = None
 
     def _flush_segment(self) -> None:
         if self._segment:
@@ -169,9 +194,91 @@ class StreamRenderer:
         self.text_parts.append(text)
         self._segment.append(text)
 
+    # ---------- 上下文压缩：一串事件合成一行 ----------
+    def _feed_compression(self, state: Any) -> None:
+        if not isinstance(state, dict):
+            return
+        status, processor = state.get("status"), str(state.get("processor") or "")
+        before = int((state.get("before") or {}).get("tokens") or 0)
+        after = int((state.get("after") or {}).get("tokens") or before)
+        batch = self._batch
+        if status == "started":
+            self._end_text()
+            if batch is None:
+                batch = self._batch = _CompressionBatch(phase=str(state.get("phase") or ""), before=before, after=before)
+            if processor in _LLM_COMPRESSORS and batch.timer is None and not batch.shown:
+                try:
+                    batch.timer = asyncio.get_running_loop().call_later(COMPRESSING_HINT_DELAY, self._show_compressing)
+                except RuntimeError:
+                    pass
+            return
+        if batch is None:
+            if status not in {"completed", "failed"}:
+                return
+            batch = self._batch = _CompressionBatch(phase=str(state.get("phase") or ""), before=before, after=before)
+        if status == "completed" and after < batch.after:
+            batch.changed, batch.after = True, after
+            batch.processors.add(processor)
+        elif status == "failed" and state.get("error"):
+            batch.errors.append(str(state["error"]))
+        elif status == "noop" and self.compression is not None:
+            reason = self.compression.error_for(str(state.get("operation_id") or ""))
+            if reason:
+                batch.errors.append(reason)
+
+    def _show_compressing(self) -> None:
+        batch = self._batch
+        if batch is None or batch.shown:
+            return
+        batch.shown = True
+        lead = "模型报上下文超长，" if batch.phase == "active_compress" else ""
+        console.print(f"  ⟳ {lead}正在压缩上下文（对话约 {fmt_tokens(batch.before)} tokens）…", style="dim", end="", markup=False, soft_wrap=True)
+
+    def _flush_compression(self) -> None:
+        batch, self._batch = self._batch, None
+        if batch is None:
+            return
+        if batch.timer is not None:
+            batch.timer.cancel()
+        overflow = batch.phase == "active_compress"   # 对话进行中的主动压缩只有一种来源：模型报超长后的恢复
+        saved = 1 - batch.after / batch.before if batch.before else 0
+        detail = f"对话约 {fmt_tokens(batch.before)} → {fmt_tokens(batch.after)} tokens（省 {saved:.0%}）"
+        retry = "，重试中" if overflow else ""
+        if batch.changed:
+            if batch.processors <= OFFLOADERS:
+                note = f"大段工具输出已转存，只留预览：{detail}"
+            else:
+                note = ("模型报上下文超长，已压缩上下文：" if overflow else "上下文已压缩：") + detail + retry
+            if batch.shown:
+                console.print(f" 完成，{detail}{retry}", style="dim", markup=False, soft_wrap=True)
+            else:
+                console.print(f"  ⟳ {note}", style="dim", markup=False, soft_wrap=True)
+            self.compression_notes.append(note)
+        elif batch.errors:
+            reason = batch.errors[-1]
+            hint = failure_hint(reason, getattr(self.compression, "stream_only", False))
+            if batch.shown:
+                console.print(f" 失败：{reason}{hint}", style="yellow", markup=False, soft_wrap=True)
+            elif reason not in self._reported_failures:
+                console.print(f"  ⚠ 上下文压缩失败，上下文保持原样：{reason}{hint}", style="yellow", markup=False, soft_wrap=True)
+            if reason not in self._reported_failures:
+                self.compression_notes.append(f"上下文压缩失败：{reason}")
+            self._reported_failures.add(reason)
+        elif batch.shown:
+            console.print(" 没有可压缩的内容", style="dim", soft_wrap=True)
+
     def feed(self, chunk: Any) -> None:
         ctype = _attr(chunk, "type", "")
         payload = _attr(chunk, "payload")
+
+        if ctype == "context.compression_state":
+            self._feed_compression(payload)
+            return
+        self._flush_compression()
+        if ctype == "context.usage":
+            if isinstance(payload, dict) and payload.get("agent_id") in (None, AGENT_ID):
+                self.last_usage = payload
+            return
 
         if ctype == "llm_output":
             self._saw_llm_output = True
@@ -258,6 +365,7 @@ class StreamRenderer:
         console.print(f"[dim]  ⎿ {esc(head)}{more}{suffix}[/dim]")
 
     def finish(self) -> str:
+        self._flush_compression()
         self._end_text()
         return "".join(self.text_parts)
 
@@ -277,6 +385,7 @@ class Repl:
         self.history: Any = None  # history.HistoryRecorder；MOLE_SAVE_HISTORY=false 时为 None
         self.checkpoint: Any = None  # history.ContextCheckpoint，由 _amain 打开；为 None 时不能续聊
         self.checkpoint_error = "没有开启会话历史（MOLE_SAVE_HISTORY=false）" if not settings.save_history else ""
+        self.last_usage: Any = None  # 最近一次请求的 context.usage 事件：系统提示、工具定义等各占多少（/context）
         if settings.save_history:
             try:
                 from mole_agent.history import HistoryRecorder
@@ -321,7 +430,7 @@ class Repl:
         query: Any = text
         final = ""
         while True:
-            renderer = StreamRenderer(verbose=self.settings.verbose)
+            renderer = StreamRenderer(verbose=self.settings.verbose, compression=self.bundle.compression)
             unsubscribe = self.bundle.activity.subscribe(renderer.feed_subagent)
             try:
                 stream = Runner.run_agent_streaming(self.bundle.agent, {"query": query}, session=self.session_id)
@@ -329,8 +438,12 @@ class Repl:
                     renderer.feed(chunk)
             finally:
                 unsubscribe()
+                final = renderer.finish() or final
                 self._record(renderer.take_transcript())
-            final = renderer.finish() or final
+                self.last_usage = renderer.last_usage or self.last_usage
+                if self.history is not None:
+                    for note in renderer.compression_notes:
+                        self.history.system(note)
             if not renderer.pending:
                 return final
             query = await self._collect_answers(renderer.pending)
@@ -428,6 +541,7 @@ class Repl:
             if self.bundle.approval:
                 self.bundle.approval.always_allow.clear()
             self.bundle.usage.reset()
+            self.last_usage = None
             if self.history is not None:
                 self.history.start(self.session_id, self.settings.model_spec)
             return Message(f"已开启新会话 {self.session_id}")
@@ -459,6 +573,14 @@ class Repl:
         async def review(args):
             return AgentPrompt(review_prompt(args.strip(), "code_reviewer" in self.bundle.subagents))
 
+        async def context(args):
+            await self._cmd_context()
+            return Message("")
+
+        async def compact(args):
+            await self._cmd_compact(args.strip())
+            return Message("")
+
         def candidates(name):
             if name == "model":
                 return [CompletionItem(c.spec) for c in usable_choices(self.settings)]
@@ -466,7 +588,7 @@ class Repl:
 
         return CommandContext(
             {"new": new, "usage": usage, "model": model, "models": models, "review": review,
-             "history": history, "resume": resume},
+             "history": history, "resume": resume, "context": context, "compact": compact},
             candidates,
         )
 
@@ -600,6 +722,7 @@ class Repl:
         if self.bundle.approval:
             self.bundle.approval.always_allow.clear()  # 「总是允许」只对当前这次会话有效，不跟着历史会话走
         self.bundle.usage.reset()
+        self.last_usage = None
         if self.history is not None and stored is not None:
             self.history.resume(stored)
             self.history.system(f"继续会话（模型 {self.settings.model_spec}）")
@@ -618,6 +741,64 @@ class Repl:
                 return await self.resume(item.id)
         console.print("[dim]当前项目没有可以继续的会话，已开启新会话[/dim]")
         return False
+
+    # ---------- 上下文：查看占用、手动压缩 ----------
+    async def _cmd_context(self) -> None:
+        from mole_agent.context import context_report
+
+        report = await context_report(self.bundle.agent, self.settings.model, self.session_id, self.last_usage,
+                                      expect_compression=self.bundle.compression is not None)
+        print_context_report(report, compression_enabled=self.bundle.compression is not None)
+
+    async def _cmd_compact(self, instruction: str) -> None:
+        """执行期间 Ctrl+C 只取消压缩：SDK 在压缩成功后才替换上下文，取消时保持原样。"""
+        loop = asyncio.get_running_loop()
+        task = asyncio.create_task(self._compact(instruction))
+        restore = _cancel_on_sigint(loop, task)
+        try:
+            await task
+        except asyncio.CancelledError:
+            console.print("\n[dim]⏹ 已中断，上下文没有改动[/dim]")
+        finally:
+            restore()
+
+    async def _compact(self, instruction: str) -> None:
+        from mole_agent.context import compact
+
+        if self.bundle.compression is None:
+            console.print("[yellow]上下文压缩没有开启（MOLE_ENABLE_CONTEXT_RAILS=false）[/yellow]")
+            return
+        started = False
+
+        def on_start(tokens: int, messages: int) -> None:
+            nonlocal started
+            started = True
+            keep = f"，重点保留：{_short(instruction, 40)}" if instruction else ""
+            console.print(f"⟳ 正在压缩上下文（{messages} 条消息，对话约 {fmt_tokens(tokens)} tokens{keep}）…",
+                          style="dim", end="", markup=False, soft_wrap=True)
+
+        outcome = await compact(self.bundle.agent, self.bundle.compression, self.session_id, instruction,
+                                on_start=on_start)
+        lead = " " if started else ""
+        if outcome.result == "empty":
+            console.print("[dim]当前会话还没有对话内容，不需要压缩[/dim]")
+        elif outcome.result == "not_loaded":
+            console.print("[yellow]这次启动后还没发过消息，压缩器还没装上：先接着聊一句再 /compact[/yellow]"
+                          "[dim]（上下文快满时发消息也会先自动压缩）[/dim]")
+        elif outcome.result == "busy":
+            console.print(f"{lead}[yellow]上下文正在被处理，稍后再试[/yellow]")
+        elif outcome.result == "compressed":
+            detail = (f"{outcome.messages_before} → {outcome.messages_after} 条消息，"
+                      f"对话约 {fmt_tokens(outcome.before)} → {fmt_tokens(outcome.after)} tokens（省 {outcome.saved_ratio:.0%}）")
+            console.print(f"{lead}[green]完成[/green]，{esc(detail)}", soft_wrap=True)
+            if self.history is not None:
+                self.history.system(f"手动压缩上下文：{detail}")
+        elif outcome.errors:
+            reason = outcome.errors[-1]
+            hint = failure_hint(reason, self.bundle.compression.stream_only)
+            console.print(f"{lead}失败，上下文保持原样：{reason}{hint}", style="yellow", markup=False, soft_wrap=True)
+        else:
+            console.print(f"{lead}[dim]没有可压缩的内容（最近几条消息总是原样保留）[/dim]")
 
     async def _cmd_models(self, arg: str) -> None:
         name = arg or self.settings.provider_name
@@ -772,6 +953,41 @@ def print_resume_summary(stored: Any, session_id: str, current_model: str) -> No
     console.print("[dim]  如果上次停在等你确认的操作上，接着聊时会先重新问你[/dim]")
 
 
+def _bar(ratio: float, threshold: float | None, width: int = 40) -> str:
+    filled = max(0, min(width, round(ratio * width)))
+    cells = ["█"] * filled + ["░"] * (width - filled)
+    if threshold:
+        mark = max(0, min(width - 1, round(threshold * width)))
+        cells[mark] = "│"
+    return "".join(cells)
+
+
+def print_context_report(report: Any, compression_enabled: bool = True) -> None:
+    stats = report.stats
+    note = "" if report.includes_prompt else "，未含系统提示和工具定义"
+    console.print(f"[bold]上下文[/bold]  约 {fmt_tokens(report.tokens)} / {fmt_tokens(report.window)} tokens"
+                  f"（{report.ratio:.0%}）[dim]{esc(note)}[/dim]")
+    if report.threshold:
+        auto = f"到 {report.threshold:.0%}（约 {fmt_tokens(int(report.window * report.threshold))}）自动压缩"
+    else:
+        auto = "自动压缩没有开启" if not compression_enabled else "没有找到自动压缩的阈值"
+    console.print(f"  {_bar(report.ratio, report.threshold)}  [dim]{esc(auto)}[/dim]")
+    source = f"（{report.window_note}）" if report.window_note else ""
+    console.print(f"  [dim]窗口[/dim]  {fmt_tokens(report.window)}[dim]{esc(source)}[/dim]")
+    console.print(
+        f"  [dim]对话[/dim]  {stats.get('total_dialogues', 0)} 轮 · {stats.get('total_messages', 0)} 条消息"
+        f"[dim]（用户 {stats.get('user_messages', 0)} · 助手 {stats.get('assistant_messages', 0)} · "
+        f"工具结果 {stats.get('tool_messages', 0)}）[/dim]"
+    )
+    parts = report.parts
+    if parts:
+        labels = (("system_prompt", "系统提示"), ("tools", "工具定义"), ("skills", "技能"), ("messages", "对话"))
+        items = " · ".join(f"{label} {fmt_tokens(parts[key])}" for key, label in labels if key in parts)
+        console.print(f"  [dim]最近一次请求[/dim]  {esc(items)}")
+    if compression_enabled:
+        console.print("  [dim]/compact 手动压缩，可以写上要保留的重点[/dim]")
+
+
 def _cancel_on_sigint(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> Any:
     """执行期间 Ctrl+C 只取消当前任务、回到输入框；返回恢复原处理方式的函数。
 
@@ -806,8 +1022,8 @@ def _friendly_error(exc: Exception) -> str:
         return f"触发限流，稍后再试：{msg}"
     if "timeout" in low or "timed out" in low:
         return f"请求超时，检查网络或调大 MOLE_TIMEOUT：{msg}"
-    if "context" in low and ("length" in low or "too long" in low):
-        return f"上下文超长，试试 /new 开新会话：{msg}"
+    if ("context" in low and ("length" in low or "too long" in low)) or is_zh_context_overflow(exc):
+        return f"上下文超长，自动压缩后仍然放不下：可以 /compact 手动压缩（可写上要保留的重点），或 /new 开新会话：{msg}"
     return f"{type(exc).__name__}: {msg}"
 
 

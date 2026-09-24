@@ -10,6 +10,7 @@ before/after_tool_call 等），priority 越大越先执行。这里演示几类
 - ToolTraceRail：旁路观测。把工具调用写进输出流（给终端 UI 渲染）并落审计日志；
   子 agent 的调用经 ActivityFeed 转给终端。
 - TokenUsageRail：统计 token 用量。
+- CompressionRail：上下文压缩器的适配（只收流式的网关、记录压缩失败原因），见 context.py。
 
 before_tool_call 执行顺序：CommandGuardRail(95) → ApprovalRail(90) → ToolTraceRail(5)
 命令类工具（SHELL_TOOLS）：bash，以及 Windows 上的 powershell，安全 rail 对两者同样生效。
@@ -280,6 +281,34 @@ class TokenUsageRail(AgentRail):
             "output_tokens": self.output_tokens,
             "total_tokens": self.input_tokens + self.output_tokens,
         }
+
+
+class CompressionRail(AgentRail):
+    """上下文压缩器的两处适配，细节见 context.py：
+
+    - init：SDK 按 priority 从高到低初始化 rails，ContextProcessorRail(85) 先把压缩器配置放进 ReActAgent 的
+      config.context_processors，这里排在它后面；网关只收流式时，把其中的 model_client 换成只走流式的客户端。
+    - before_model_call：第一次调模型前订阅 SDK 的模型调用失败事件，记下压缩失败的原因（SDK 自己只写日志）。
+    """
+
+    priority = 50  # 必须低于 ContextProcessorRail(85)，init 时压缩器配置才已经在了
+
+    def __init__(self, watcher: Any, client_config_wrapper: Optional[Callable[[Any], Any]] = None) -> None:
+        super().__init__()
+        self.watcher = watcher
+        self.client_config_wrapper = client_config_wrapper
+
+    def init(self, agent: Any) -> None:
+        if self.client_config_wrapper is None:
+            return
+        config = getattr(getattr(agent, "react_agent", None), "config", None)
+        for _, processor_config in getattr(config, "context_processors", None) or []:
+            client_config = getattr(processor_config, "model_client", None)
+            if client_config is not None:
+                processor_config.model_client = self.client_config_wrapper(client_config)
+
+    async def before_model_call(self, ctx: Any) -> None:
+        await self.watcher.listen()
 
 
 # 只读 shell：子 agent 没有交互入口，不能靠人工确认兜底，所以只放行明确只读的命令

@@ -5,10 +5,10 @@
 ## 分层与依赖
 
 - 模块职责：`config.py` 配置 → `models.py` 供应商/模型目录 → `prompts.py` 系统提示词 →
-  `tools/` 自定义工具 → `rails.py` 自定义 rails → `subagents/` 子 agent → `agent.py` 组装 DeepAgent →
-  `cli.py` 终端交互。
+  `tools/` 自定义工具 → `rails.py` 自定义 rails → `subagents/` 子 agent → `context.py` 上下文占用与压缩 →
+  `agent.py` 组装 DeepAgent → `cli.py` 终端交互。
   新代码放进职责对应的模块，不要在 `cli.py` 里写业务逻辑。
-- `config.py`、`models.py`、`prompts.py` 不在模块顶层 import `openjiuwen`；`cli.py` 只在函数内部
+- `config.py`、`models.py`、`prompts.py`、`context.py` 不在模块顶层 import `openjiuwen`；`cli.py` 只在函数内部
   import SDK。这样 `mole --help`、`--list-models` 和配置报错不需要加载整个 SDK。
 - 新增第三方依赖必须写进 `pyproject.toml` 的 `dependencies`，并说明用途。
 
@@ -20,6 +20,9 @@
 - 要兼容 PyPI 发布版 0.1.18.x。开发分支才有的接口不能用（例如
   `openjiuwen.core.single_agent.ability_manager.resolve_tool_result_text`）。不确定时查
   `.venv/lib/python3.*/site-packages/openjiuwen/` 里的源码。
+- 上下文压缩器按 ReActAgent 配置里的 `model_client` 自己建模型客户端，不经过 Mole 的模型对象：
+  改压缩器的调用方式要改这份配置（`CompressionRail.init`），失败原因靠订阅 `LLMCallEvents.LLM_CALL_ERROR` 拿到。
+  `/context`、`/compact` 在第一次对话前也可能被调用，此时 rails 还没初始化，不能把不带压缩器的上下文留在内存池里。
 - 模型请求参数不要直接塞进 `ModelRequestConfig`：额外字段会原样进入每个请求。尤其不能加 `stream=True`，
   非流式调用会报 `'AsyncStream' object has no attribute 'choices'`；只接受流式的网关用 `stream_only`（`StreamOnlyModel`）。
 - SDK 的已知缺陷要在代码里注释原因，例如 `pyproject.toml` 里显式依赖 `opentelemetry-sdk`、
@@ -28,7 +31,8 @@
 ## Rails
 
 - 每个 rail 都要显式定义 `priority`，并在注释里说明为什么排在谁前后。当前顺序：
-  `CommandGuardRail(95) > ApprovalRail(90) > TokenUsageRail(10) > ToolTraceRail(5)`；
+  `CommandGuardRail(95) > ApprovalRail(90) > CompressionRail(50，init 要排在 ContextProcessorRail(85) 之后)
+  > TokenUsageRail(10) > ToolTraceRail(5)`；
   子 agent 用 `ReadOnlyShellRail(95)` 代替 `CommandGuardRail` + `ApprovalRail`。
 - `DeepAgentRail` 子类的 `__init__` 必须调用 `super().__init__()`。
 - 拦截工具调用用 `BaseInterruptRail.resolve_interrupt` 返回 `approve()` / `reject()` / `interrupt()`，

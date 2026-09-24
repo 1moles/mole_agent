@@ -85,7 +85,8 @@ cd D:\code\your-project; mole
 
 REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
 （默认未提交改动，也可以 `/review 提交 a1b2c3d`、`/review 和 main 比`），
-`/new` 新会话，`/history [序号|关键词]` 查看 / 搜索历史会话，`/resume [序号|关键词]` 回到历史会话继续聊，`/usage` token 用量，`/help`，`/exit`；
+`/new` 新会话，`/history [序号|关键词]` 查看 / 搜索历史会话，`/resume [序号|关键词]` 回到历史会话继续聊，`/usage` token 用量，
+`/context` 上下文占用，`/compact [要保留的重点]` 手动压缩上下文，`/help`，`/exit`；
 `Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
 
 输入 `/` 自动展开命令菜单，继续输入可过滤候选；↑↓ 选择、Tab 补全，选中候选后 Enter 确认，再次 Enter 提交。Esc 关闭菜单并保留输入。`/model ` 和 `/models ` 支持本地配置候选补全。
@@ -144,6 +145,47 @@ REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可�
 - 上次如果停在等你确认的操作上（比如在确认提示处按了 Ctrl+C），继续后会先重新问你那一步。
 - 开启续聊之前的会话只有历史记录、没有检查点，只能查看，不能继续。
 
+### 上下文压缩
+
+长对话由 SDK 自动压缩（`ContextProcessorRail` 的预设处理器链，`MOLE_ENABLE_CONTEXT_RAILS=false` 可关闭）：
+
+```
+每次调模型前
+  ├─ 单条工具输出超过窗口 10%  → 转存全文，上下文里只留开头和结尾的预览（不调模型）
+  ├─ 占用达到窗口 80%          → 调模型把较早的对话压成摘要，最近的消息原样保留
+  └─ 模型报「上下文超长」       → 主动压缩一次，再重试这一步（只重试一次）
+```
+
+压缩时终端提示一行（压缩要等一次模型调用，超过 1 秒会先显示「正在压缩…」，完成后接在同一行后面）：
+
+```
+  ⟳ 上下文已压缩：对话约 152.3k → 18.6k tokens（省 88%）
+  ⟳ 模型报上下文超长，已压缩上下文：对话约 30.1k → 6.2k tokens（省 79%），重试中
+  ⚠ 上下文压缩失败，上下文保持原样：HTTPStatusError: Client error '400 Bad Request' ...
+```
+
+`/context` 看当前占用、窗口大小和它的来源、自动压缩的阈值，以及最近一次请求里系统提示、工具定义、对话各占多少：
+
+```
+› /context
+上下文  约 38.2k / 200k tokens（19%）
+  ████████░░░░░░░░░░░░░░░░░░░░░░░░│░░░░░░░  到 80%（约 160k）自动压缩
+  窗口  200k（默认值：inner-model 不在 SDK 内置的模型表里）
+  对话  8 轮 · 42 条消息（用户 8 · 助手 17 · 工具结果 17）
+  最近一次请求  系统提示 6.1k · 工具定义 9.8k · 技能 1.2k · 对话 21.1k
+```
+
+`/compact` 不等到 80% 就先压缩，后面可以写上要特别保留的内容，例如 `/compact 保留登录模块的改动和没做完的待办`。
+压缩结果写回检查点，重启后 `/resume` 回来也是压缩后的上下文。执行中 `Ctrl+C` 可以取消，上下文不变。
+
+- 压缩用的是**启动时**的模型（`/model` 切换后不变），`stream_only` 也按启动时的供应商。
+- 窗口大小按模型名查 SDK 内置的表，查不到按 200k 算——内部模型基本都查不到，`/context` 会显示「默认值」。
+  实际窗口更小的话，要等接口报超长才会压缩。
+- 压缩失败（比如压缩请求被网关拒绝）时 SDK 只记日志、上下文不变，Mole 会把原因打出来。
+- 「上下文超长」的判断：SDK 认英文报错（`maximum context length`、`prompt is too long` 等），Mole 补上了中文网关
+  常见的写法（「输入长度超过…上下文」「上下文超长」之类）。
+- 续聊回来还没发消息时不能 `/compact`：rails（包括压缩器）要到第一次对话时才装上，先聊一句即可。
+
 ## 选择供应商和模型
 
 供应商在 `models.toml` 里配置（查找顺序：`~/.mole-agent/models.toml` → 本项目根目录 `models.toml`），
@@ -188,6 +230,8 @@ models = ["<部署的模型名>"]
 
 **只接受流式请求的模型**（要求请求里 `stream=true`）：在供应商下加 `stream_only = true`。agent 对话本来就是流式的，
 打开后 SDK 里其余的非流式调用（任务完成判断、上下文压缩、`mole --check` 等）也改为流式请求、在本地拼成完整回复。
+上下文压缩器是 SDK 按启动时的配置自己建的模型客户端，不经过 Mole 的模型对象；`rails.CompressionRail` 把压缩器的
+客户端配置换成 SDK 客户端注册表里登记的只走流式的客户端（`agent.stream_only_client_config`）。
 不要自己往 `ModelRequestConfig` 里加 `stream=True`：它会被原样塞进非流式调用的请求参数，
 报 `'AsyncStream' object has no attribute 'choices'`。
 
@@ -219,6 +263,7 @@ models = ["<部署的模型名>"]
 │ tools/      自定义工具，每个工具一个文件，启动时自动发现                  │
 │ subagents/  子 agent，每个一个文件：explore_agent、code_reviewer          │
 │ rails.py    CommandGuard / Approval / ReadOnlyShell / ToolTrace / Usage   │
+│ context.py  /context、/compact、压缩提示、压缩器只走流式、压缩失败原因    │
 │ models.py   models.toml → 供应商/模型目录、选择规则、在线查询 /models      │
 │ config.py   MOLE_* 环境变量 + 选中的模型 → Settings                       │
 └──────────────────────────────────┬───────────────────────────────────────┘
@@ -386,7 +431,10 @@ pytest -q        # 不联网、不需要 API key
 - `tests/test_netcheck.py`：连接诊断——异常链、openjiuwen 与 httpx 的代理选择差异、NO_PROXY 写法、
   DNS / TCP / 代理 CONNECT / 证书 / 加密套件各步骤（本机临时服务，不联网）
 - `tests/test_stream_only.py`：起一个拒绝非流式请求的假网关，确认 `stream_only` 下 `--check`、带解析器的调用、
-  工具调用都能通过流式拼接得到完整结果
+  工具调用、上下文压缩都能通过流式拼接得到完整结果；没打开时压缩被拒，终端说明原因
+- `tests/test_context.py`：`/context` 的占用和阈值、`/compact`（带保留要求、失败原因、重启后仍是压缩后的上下文、
+  续聊后未发消息时不装压缩器也不会弄丢压缩器）、自动压缩的一行提示（慢时先显示进度）、
+  模型报超长（英文 / 中文报错）后压缩重试
 - `tests/test_windows.py`：powershell 同样受确认 / 拦截 / 只读守卫约束，Windows 危险命令用例表，
   `&` 和换行不能绕过命令检查，事件循环不支持信号处理时 Ctrl+C 只打断当前任务
 - `tests/test_header_auth.py`：请求头鉴权的解析与校验；起一个本地假服务，确认对话、流式、`--check`、`/models`
