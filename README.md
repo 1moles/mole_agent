@@ -196,8 +196,8 @@ REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可�
 输入序号查看详情（回车返回） › 2
 ──────────── mole-1a2b3c4d · 09-24 09:15 · deepseek/deepseek-flash · 3 轮 ────────────
 › 09:15 帮我看看 tools 目录下有哪些工具
-  ⎿ glob(mole_agent/tools/*.py) → 成功：mole_agent/tools/git_changes.py
-● tools 目录下有两个工具：git_changes（取代码改动）和 project_overview（仓库概览）。
+  ⎿ glob(mole_agent/tools/*.py) → 成功：mole_agent/tools/question.py
+● tools 目录下只有一个工具：question（向用户提问）；_template.py 是新工具模板。
 ```
 
 - 记录的内容：你的输入（斜杠命令记原样，如 `/review`）、回复文本、每次工具调用的一行摘要（成功 / 失败 / 被拦截 / 用户拒绝），
@@ -211,7 +211,7 @@ REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可�
 › /resume 2
 ✓ 已回到会话 mole-1a2b3c4d · 3 轮 · 对话上下文已恢复
   上次问：帮我看看 tools 目录下有哪些工具
-  上次答：tools 目录下有两个工具：git_changes（取代码改动）和 project_overview（仓库概览）。
+  上次答：tools 目录下只有一个工具：question（向用户提问）；_template.py 是新工具模板。
 ```
 
 - 原理：openjiuwen 默认把 agent 状态（上下文、待确认的操作）放在内存里，重启就没了。Mole 换成 SDK 自带的
@@ -371,7 +371,7 @@ models = ["<部署的模型名>"]
 主 agent ── task_tool(subagent_type="code_reviewer", task_description="检视未提交改动")
                │  SDK 现场创建子 agent（上下文只有任务描述），和主 agent 共用沙箱和 token 统计
                ▼
-            code_reviewer：skill_tool 读 code-review 技能 → git_changes → read_file / grep …
+            code_reviewer：skill_tool 读 code-review 技能 → bash git diff / git show → read_file / grep …
                │  bash 经 ReadOnlyShellRail：只读命令放行，其余直接驳回（不弹确认）
                │  每个工具调用 → 审计（agent=code_reviewer）+ 终端里以 │ 开头的一行
                ▼
@@ -410,8 +410,6 @@ mole_agent/tools/
 ├── __init__.py          自动发现与注册（build_custom_tools）
 ├── _common.py           共用函数：resolve_inside（路径限制在项目内）、truncate（输出截断）
 ├── _template.py         新工具模板（下划线开头的文件不会被加载）
-├── git_changes.py
-├── project_overview.py
 └── question.py          向用户提问；由 rails.QuestionRail 中断等回答，不会真正执行
 ```
 
@@ -519,7 +517,7 @@ pytest -q        # 不联网、不需要 API key
 - `tests/test_header_auth.py`：请求头鉴权的解析与校验；起一个本地假服务，确认对话、流式、`--check`、`/models`
   发出的请求都带上了配置的请求头且没有 `Authorization`
 - `tests/test_skills.py`：仓库自带技能的格式检查；项目级 / 用户级 / 软链接技能能被加载和读取，沙箱外仍被拦截
-- `tests/test_subagents.py`：只读 shell 放行/拦截用例表、`git_changes` 的提交/分支范围、子 agent 自动发现与只读配置、
+- `tests/test_subagents.py`：只读 shell 放行/拦截用例表、子 agent 自动发现与只读配置、
   `[subagents]` 选模型，以及主 agent → `task_tool` → `code_reviewer` 的端到端流程（写命令被拒、不弹确认、审计带 agent 名）
 - `tests/test_packaging.py`：Windows 打包脚本——PowerShell 脚本带 UTF-8 BOM、引用的文件都存在、启动器用隔离模式运行、CI 调用打包脚本
 - `tests/test_e2e_fake_llm.py`：用 pip 装好的 openjiuwen SDK + 按剧本回复的假模型，

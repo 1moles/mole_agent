@@ -5,7 +5,7 @@ description: 根据当前未提交的改动生成规范的 git 提交信息。�
 
 # 生成提交信息
 
-1. 调用 `git_changes`（用户已 `git add` 时传 `staged=true`）拿到改动。
+1. 用 bash 执行 `git diff --staged` 拿到改动；没有暂存的改动时改用 `git status` 和 `git diff`。
 2. 按 Conventional Commits 格式输出：
 
    ```

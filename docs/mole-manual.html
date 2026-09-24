@@ -219,10 +219,10 @@ footer{margin-top:4rem;padding-top:1rem;border-top:1px solid var(--line);font-si
     <li><b>0.4.1</b>mole-agent</li>
     <li><b>≥0.1.18</b>openjiuwen</li>
     <li><b>3.11–3.13</b>Python</li>
-    <li><b>16</b>个工具（Windows 17）</li>
+    <li><b>14</b>个工具（Windows 15）</li>
     <li><b>2</b>个子 agent</li>
     <li><b>11</b>个斜杠命令</li>
-    <li><b>262</b>个测试</li>
+    <li><b>257</b>个测试</li>
   </ul>
   <p class="basis">依据：仓库 main 分支 <code>7949fac</code>，加上尚未提交的 Windows 便携包打包脚本（2026-09-24）。数字和默认值均对照源码核实。</p>
 </header>
@@ -260,7 +260,7 @@ mole -c                               <span class="cm"># 继续这个项目最�
     <div class="chips">
       <div class="chip"><b>agent.py</b>模型 + 提示词 + 工具 + rails + MCP + 子 agent → create_deep_agent</div>
       <div class="chip"><b>prompts.py</b>人设、工作准则、运行环境、项目记忆</div>
-      <div class="chip"><b>tools/</b>git_changes · project_overview · question</div>
+      <div class="chip"><b>tools/</b>question · _template（新工具模板）</div>
       <div class="chip"><b>rails.py</b>拦截、确认、提问、只读、轨迹、用量、压缩适配</div>
       <div class="chip"><b>subagents/</b>explore_agent · code_reviewer</div>
       <div class="chip"><b>context.py</b>/context、/compact、压缩失败原因</div>
@@ -362,16 +362,14 @@ mole -c                               <span class="cm"># 继续这个项目最�
 </ul>
 
 <h3 id="arch-tools">工具</h3>
-<p>Linux / macOS 下模型拿到 16 个工具，Windows 多一个 powershell。开启网页工具或配置 MCP 后还会更多。</p>
+<p>Linux / macOS 下模型拿到 14 个工具，Windows 多一个 powershell。开启网页工具或配置 MCP 后还会更多。</p>
 <div class="table-wrap"><table>
 <thead><tr><th>工具</th><th>来源</th><th>子 agent</th><th>用途</th></tr></thead>
 <tbody>
 <tr><td><code>read_file</code> <code>glob</code> <code>list_files</code> <code>grep</code></td><td><span class="tag sdk">SDK</span></td><td>有</td><td>读文件、按模式找文件、列目录、搜内容</td></tr>
 <tr><td><code>write_file</code> <code>edit_file</code></td><td><span class="tag sdk">SDK</span></td><td>无</td><td>写文件、精确替换；默认要你确认</td></tr>
-<tr><td><code>bash</code></td><td><span class="tag sdk">SDK</span></td><td>只读命令</td><td>在项目目录执行命令；Windows 上按命令自动选 PowerShell、Git Bash 或 cmd；默认要你确认</td></tr>
+<tr><td><code>bash</code></td><td><span class="tag sdk">SDK</span></td><td>只读命令</td><td>在项目目录执行命令；Windows 上按命令自动选 PowerShell、Git Bash 或 cmd；默认要你确认。取代码改动也用它（<code>git status</code> / <code>git diff</code> / <code>git show</code>）</td></tr>
 <tr><td><code>powershell</code></td><td><span class="tag sdk">SDK</span></td><td>无</td><td>仅 Windows；和 bash 同样受确认和拦截</td></tr>
-<tr><td><code>git_changes</code></td><td><span class="tag mole">Mole</span> <span class="tag ro">只读</span></td><td>有</td><td>取代码改动：未提交（默认）、<code>staged=true</code> 暂存区、<code>commit=</code> 某个提交、<code>base=</code> 当前分支相对某分支</td></tr>
-<tr><td><code>project_overview</code></td><td><span class="tag mole">Mole</span> <span class="tag ro">只读</span></td><td>有</td><td>语言分布（文件数、行数）、构建与依赖文件、顶层目录树（<code>path</code>、<code>max_depth</code> 1–4）</td></tr>
 <tr><td><code>question</code></td><td><span class="tag mole">Mole</span> 常驻</td><td>无</td><td>执行中向你提问：单选、多选、自定义答案，见 <a href="#interact">对话中的交互</a></td></tr>
 <tr><td><code>todo_create</code> <code>todo_list</code> <code>todo_get</code> <code>todo_modify</code></td><td><span class="tag sdk">SDK</span></td><td>无</td><td>多步任务的计划与进度</td></tr>
 <tr><td><code>skill_tool</code></td><td><span class="tag sdk">SDK</span></td><td>code_reviewer 有</td><td>读取技能（SKILL.md 及其 references）</td></tr>
@@ -392,7 +390,7 @@ mole -c                               <span class="cm"># 继续这个项目最�
 <ol class="flow">
   <li>主 agent 调用 <code>task_tool(subagent_type="code_reviewer", task_description="检视未提交改动")</code>。</li>
   <li>SDK 现场创建子 agent，上下文里只有任务描述；和主 agent 共用沙箱和 token 统计。</li>
-  <li>子 agent 读技能 → <code>git_changes</code> → <code>read_file</code> / <code>grep</code>。bash 经过 <code>ReadOnlyShellRail</code>：只读命令放行，其余直接驳回，不弹确认。</li>
+  <li>子 agent 读技能 → 用 bash 执行 <code>git status</code> / <code>git diff</code> / <code>git show</code> 取改动 → <code>read_file</code> / <code>grep</code> 看上下文。bash 经过 <code>ReadOnlyShellRail</code>：只读命令放行，其余直接驳回，不弹确认。</li>
   <li>每个工具调用写审计（<code>agent=code_reviewer</code>），并经 ActivityFeed 在终端显示为以 <code>│</code> 开头的一行。</li>
   <li>报告交回主 agent，由主 agent 转述；需要改代码时由主 agent 来改，照常需要你确认。</li>
 </ol>
@@ -761,7 +759,7 @@ models = ["coder-large"]</pre></div>
 <div class="codebox"><pre>› /resume 2
 <span class="g">✓ 已回到会话 mole-1a2b3c4d</span><span class="d"> · 3 轮 · 对话上下文已恢复</span>
 <span class="d">  上次问：</span>帮我看看 tools 目录下有哪些工具
-<span class="d">  上次答：</span>tools 目录下有两个工具：git_changes（取代码改动）和 project_overview（仓库概览）。</pre></div>
+<span class="d">  上次答：</span>tools 目录下只有一个工具：question（向用户提问）；_template.py 是新工具模板。</pre></div>
 <ul>
   <li>续聊用的是当前选中的模型，不切回原会话的模型；「总是允许」不跟着历史会话走。</li>
   <li>上次停在确认或提问上的，继续后先重新问你那一步；续聊时新打的那句话不会被当成回答。</li>
@@ -912,14 +910,14 @@ models = ["coder-large"]</pre></div>
 
 <section id="tests">
 <h2><span class="num">06</span>测试</h2>
-<div class="codebox"><pre class="cmd">pytest -q        <span class="cm"># 不联网、不需要 API key；262 个用例</span></pre></div>
+<div class="codebox"><pre class="cmd">pytest -q        <span class="cm"># 不联网、不需要 API key；257 个用例</span></pre></div>
 <p>端到端测试用 pip 装好的 openjiuwen SDK 加一个按剧本回复的假模型（<code>ScriptedModel</code>），跑真实的 agent 流程；网络相关的用例起本机临时服务。</p>
 <div class="table-wrap"><table>
 <thead><tr><th>文件</th><th>用例</th><th>覆盖</th></tr></thead>
 <tbody>
-<tr><td><code>test_subagents.py</code></td><td class="num">53</td><td>只读 shell 放行 / 拦截用例表、git_changes 的范围、子 agent 自动发现与只读配置、<code>[subagents]</code> 选模型、主 agent → task_tool → code_reviewer 端到端</td></tr>
+<tr><td><code>test_subagents.py</code></td><td class="num">52</td><td>只读 shell 放行 / 拦截用例表、子 agent 自动发现与只读配置、<code>[subagents]</code> 选模型、主 agent → task_tool → code_reviewer 端到端</td></tr>
 <tr><td><code>test_windows.py</code></td><td class="num">50</td><td>powershell 受确认 / 拦截 / 只读守卫约束、Windows 危险命令用例表、<code>&amp;</code> 和换行不能绕过检查、Ctrl+C 兜底</td></tr>
-<tr><td><code>test_offline.py</code></td><td class="num">39</td><td>自定义工具、命令拒绝规则、提示词、配置、MCP 解析、agent 组装</td></tr>
+<tr><td><code>test_offline.py</code></td><td class="num">35</td><td>自定义工具、命令拒绝规则、提示词、配置、MCP 解析、agent 组装</td></tr>
 <tr><td><code>test_question.py</code></td><td class="num">18</td><td>question 的常驻声明、参数校验、单选 / 多选 / 自定义 / 跳过的输入解析、问答后继续、输错重问、中断后续聊重新提问</td></tr>
 <tr><td><code>test_history.py</code></td><td class="num">13</td><td>SDK 的文件格式、按项目分目录、列表与详情、关键词模糊搜索、各种事件都记下</td></tr>
 <tr><td><code>test_netcheck.py</code></td><td class="num">13</td><td>异常链、openjiuwen 与 httpx 的代理差异、NO_PROXY 写法、DNS / TCP / CONNECT / 证书 / 加密套件</td></tr>
@@ -970,11 +968,12 @@ models = ["coder-large"]</pre></div>
   <li><span class="meta">2026-09-24 · baf9aa0</span><br>上下文管理：<code>/context</code>、<code>/compact</code>、压缩提示、流式网关压缩、中文超长报错</li>
   <li><span class="meta">2026-09-24 · 5e21b3b</span><br>常驻 question 工具，替换 SDK 的 ask_user</li>
   <li><span class="meta">2026-09-24 · 7949fac</span><br>架构与使用手册 docs/mole-manual.html</li>
-  <li class="pending"><span class="meta">未提交</span><br>Windows 便携版：自带 Python 的 zip、mole.exe 启动器、install.ps1、GitHub Actions 打包</li>
+  <li><span class="meta">2026-09-24 · 76f5caa</span><br>Windows 便携版：自带 Python 的 zip、mole.exe 启动器、install.ps1、GitHub Actions 打包</li>
+  <li class="pending"><span class="meta">未提交</span><br>删除 git_changes、project_overview 工具；检视和提交信息技能改用 bash 执行只读 git 命令</li>
 </ol>
 </section>
 
-<footer>Mole 架构与使用手册 · 依据 mole-agent 0.4.1（main <code>7949fac</code> + 未提交的 Windows 便携包打包脚本）整理 · 2026-09-24</footer>
+<footer>Mole 架构与使用手册 · 依据 mole-agent 0.4.1（main <code>76f5caa</code> + 未提交的工具精简）整理 · 2026-09-24</footer>
 </main>
 </div>
 

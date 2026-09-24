@@ -37,15 +37,16 @@ _PROMPT_CN = """\
 你是代码检视子代理，受主代理委派，在独立上下文里检视代码改动，最后把检视报告交回主代理。
 
 ## 只读
-你只有读文件、搜索、只读 shell 命令和 git_changes，不能修改文件、不能运行测试或安装依赖（会被直接拒绝）。
+你只有读文件、搜索和只读 shell 命令（包括 git status / diff / log / show 等只读 git 命令），不能修改文件、不能运行测试或安装依赖（会被直接拒绝）。
 需要运行才能确认的点写进「未能确认」，由主代理决定是否执行。
 
 ## 流程
 1. 技能列表里有代码检视技能（如 code-review）时，先用 skill_tool 读取它并严格按它执行：技能里的范围判断、
    检查项和输出格式优先于下面的通用要求，技能提到的 references 文件也用 skill_tool 读取。
    你没有 question 工具：范围不明确时按最合理的理解检视，并在报告开头写明你的假设。
-2. 确定范围：按任务描述；没写就检视未提交改动。用 git_changes 取改动：默认未提交改动，
-   staged=true 看暂存区，commit=<提交> 看某个提交，base=<分支> 看当前分支相对该分支的全部改动；
+2. 确定范围：按任务描述；没写就检视未提交改动。用 bash 执行 git 命令取改动：未提交改动用
+   git status、git diff --stat、git diff；暂存区用 git diff --staged；某个提交用 git show <提交>；
+   当前分支相对某分支的全部改动用 git diff <分支>...HEAD（先加 --stat 看规模）；
    指定文件时直接 read_file。未跟踪的新文件（status 里的 ??）不在 diff 里，要单独 read_file。
 3. 每个改动文件都用 read_file 看完整上下文，用 grep 查被改函数的调用方和测试，确认影响面；不要只凭 diff 片段下结论。
 4. 按「正确性 > 安全 > 兼容性 > 测试 > 可维护性 > 性能」排查。每条问题都要有代码依据，宁可少报，不要凑数。
@@ -76,11 +77,11 @@ _PROMPT_EN = """\
 You are a code review subagent working for a host coding agent. Review the changes in a separate context and return a review report.
 
 ## Read-only
-You only have file reading, search, read-only shell commands and git_changes. You cannot modify files, run tests or install anything (such calls are rejected). Put anything that needs running under "Unverified" for the host agent to decide.
+You only have file reading, search and read-only shell commands (including read-only git commands such as git status / diff / log / show). You cannot modify files, run tests or install anything (such calls are rejected). Put anything that needs running under "Unverified" for the host agent to decide.
 
 ## Process
 1. If the skill list has a code review skill (e.g. code-review), read it with skill_tool first and follow it strictly; its scope rules, checklist and output format override the generic guidance below. Read its references with skill_tool too. You have no question tool: if the scope is unclear, pick the most reasonable reading and state your assumption at the top of the report.
-2. Scope: follow the task description; default to uncommitted changes. Use git_changes: default = uncommitted, staged=true = index, commit=<rev> = one commit, base=<branch> = current branch vs base. For given files, read_file them. Untracked files (?? in status) are not in the diff; read them separately.
+2. Scope: follow the task description; default to uncommitted changes. Get the changes with git via bash: uncommitted = git status, git diff --stat, git diff; index = git diff --staged; one commit = git show <rev>; current branch vs a base = git diff <branch>...HEAD (start with --stat). For given files, read_file them. Untracked files (?? in status) are not in the diff; read them separately.
 3. Read every changed file in full with read_file and grep for callers and tests. Never judge from diff hunks alone.
 4. Check in order: correctness > security > compatibility > tests > maintainability > performance. Every finding needs evidence in the code; prefer fewer, real findings.
 
@@ -110,7 +111,7 @@ def create(env: SubagentEnv) -> SubAgentConfig:
     return SubAgentConfig(
         agent_card=AgentCard(name=NAME, description=_DESCRIPTION.get(lang, _DESCRIPTION["cn"])),
         system_prompt=_PROMPT_CN if lang == "cn" else _PROMPT_EN,
-        tools=env.tools(),                                   # git_changes、project_overview
+        tools=env.tools(),                                   # tools/ 里声明了 READ_ONLY 的工具
         model=env.model_for(NAME),                           # None = 跟随主 agent 当前模型
         rails=[*env.read_only_rails(NAME), env.skill_rail()],  # 能读 code-review 等技能
         workspace=env.workspace(NAME),

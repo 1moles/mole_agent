@@ -428,7 +428,7 @@ class ReadOnlyShellRail(BaseInterruptRail):
             return self.approve()
         _mark_rejected(ctx, tool_call, "guard")
         return self.reject(tool_result=(
-            f"只读子 agent 不能执行这条命令（{reason}）。请改用 read_file / grep / glob / git_changes，"
+            f"只读子 agent 不能执行这条命令（{reason}）。请改用 read_file / grep / glob，或 git status / diff / log / show 等只读 git 命令，"
             "或在最终报告里建议主 agent 去执行。"
         ))
 

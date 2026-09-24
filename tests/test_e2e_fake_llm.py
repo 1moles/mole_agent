@@ -90,8 +90,8 @@ def _audit(settings: Settings) -> list[dict]:
 async def test_full_flow(env):
     proj, settings, bundle, fake, repl, answers, asked = env
 
-    # 1) 自定义工具 + 需要确认的 bash（批准），命令在项目目录执行
-    fake.plan(("先看看项目。", [("project_overview", {})]),
+    # 1) 只读工具直接执行 + 需要确认的 bash（批准），命令在项目目录执行
+    fake.plan(("先看看项目。", [("glob", {"pattern": "*.py"})]),
               ("", [("bash", {"command": "echo hello > out.txt"})]),
               ("已写入。", []))
     answers[:] = ["y"]
@@ -103,7 +103,7 @@ async def test_full_flow(env):
     # 模型拿到的工具里应包含内置工具和自定义工具
     offered = next(c["tools"] for c in fake.calls if c.get("tools"))
     names = {getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None) for t in offered}
-    assert {"read_file", "edit_file", "bash", "question", "project_overview", "git_changes"} <= names
+    assert {"read_file", "edit_file", "bash", "glob", "grep", "question"} <= names
     assert "ask_user" not in names   # 由 question 代替
 
     # 2) 用户拒绝 → 不执行
@@ -136,8 +136,8 @@ async def test_full_flow(env):
     await repl.run_turn("读 /etc/hosts")
 
     # 6) 多轮上下文保留
-    fake.plan(("", [("git_changes", {})]), ("改动如上。", []))
-    await repl.run_turn("看看改动")
+    fake.plan(("", [("glob", {"pattern": "*.txt"})]), ("文件如上。", []))
+    await repl.run_turn("看看有哪些文本文件")
     assert fake.calls[-1]["n_msgs"] > 10
 
     records = _audit(settings)

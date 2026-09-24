@@ -12,10 +12,10 @@ description: 检视 Mole（kernel 项目）的代码改动——未提交改动�
 
 | 用户的说法 | 取改动的方式 |
 |---|---|
-| 没说 / 「我改的」「未提交的」 | `git_changes` |
-| 「暂存的」「add 过的」 | `git_changes`，`staged=true` |
-| 某个提交 | `git_changes`，`commit=<sha>` |
-| 分支、「和 main 比」 | `git_changes`，`base=<分支>`（看 `<分支>...HEAD`） |
+| 没说 / 「我改的」「未提交的」 | `git status`、`git diff --stat`、`git diff` |
+| 「暂存的」「add 过的」 | `git diff --staged --stat`、`git diff --staged` |
+| 某个提交 | `git show --stat <sha>`、`git show <sha>` |
+| 分支、「和 main 比」 | `git diff --stat <分支>...HEAD`、`git diff <分支>...HEAD` |
 | 指定文件或目录 | 直接 `read_file`，按整份代码检视 |
 
 范围不明确（比如分不清要对比哪个分支）时用 `question` 工具问，不要猜；作为 `code_reviewer` 子 agent 运行时

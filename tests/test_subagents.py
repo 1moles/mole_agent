@@ -1,4 +1,4 @@
-"""子 agent：只读 shell 守卫、git_changes 的提交/分支范围、自动发现与配置、端到端派活。"""
+"""子 agent：只读 shell 守卫、自动发现与配置、端到端派活。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from mole_agent.config import Settings
 from mole_agent.models import ModelCatalog, ProviderConfig
 from mole_agent.rails import ActivityFeed, ReadOnlyShellRail, TokenUsageRail, read_only_violation
 from mole_agent.subagents import SubagentEnv, build_subagents, discover_subagent_modules
-from mole_agent.tools.git_changes import changes
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -64,33 +63,10 @@ async def test_read_only_shell_rail_is_an_interrupt_rail():
     assert rail.priority >= 95  # 必须先于任何可能执行命令的环节
 
 
-# ---------------------------------------------------------------- git_changes：提交 / 分支
+# ---------------------------------------------------------------- git 仓库（端到端用例用）
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", "-c", "user.email=a@b.c", "-c", "user.name=t", *args],
                    cwd=cwd, check=True, capture_output=True)
-
-
-def test_git_changes_commit_and_base(tmp_path: Path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-q", "-m", "init")
-    _git(repo, "checkout", "-q", "-b", "feature")
-    (repo / "a.py").write_text("x = 2\n", encoding="utf-8")
-    _git(repo, "commit", "-q", "-am", "change x to two")
-
-    out = changes(repo, commit="HEAD")
-    assert "change x to two" in out and "+x = 2" in out
-
-    out = changes(repo, base="main")
-    assert "change x to two" in out and "+x = 2" in out and "-x = 1" in out
-
-    assert "找不到提交" in changes(repo, commit="deadbeef")
-    for bad in ("--output=/tmp/x", "a b", "HEAD;rm -rf /"):
-        assert "不是合法的 git 引用" in changes(repo, commit=bad)
-        assert "不是合法的 git 引用" in changes(repo, base=bad)
 
 
 # ---------------------------------------------------------------- 发现与配置
@@ -132,7 +108,7 @@ def test_subagents_are_read_only(tmp_path: Path):
         assert not {"ApprovalRail", "AskUserRail", "QuestionRail"} & set(types), config.agent_card.name
         sysop = next(r for r in config.rails if type(r).__name__ == "SysOperationRail")
         assert sysop._read_only is True  # noqa: SLF001 —— 测试里检查 SDK rail 的配置
-        assert {t.card.name for t in config.tools} == {"git_changes", "project_overview"}
+        assert config.tools == []  # tools/ 里目前没有声明 READ_ONLY 的工具（question 不能给子 agent）
 
 
 def test_code_reviewer_config(tmp_path: Path):
@@ -217,11 +193,11 @@ def test_read_only_tool_filter(tmp_path: Path, monkeypatch):
     import types
 
     import mole_agent.tools as tools_pkg
-    from mole_agent.tools import git_changes
+    from mole_agent.tools import _template
 
     writer = types.ModuleType("mole_agent.tools.writer")
-    writer.create = git_changes.create  # 没声明 READ_ONLY：只给主 agent
-    monkeypatch.setattr(tools_pkg, "discover_tool_modules", lambda: [git_changes, writer])
+    writer.create = _template.create  # 没声明 READ_ONLY：只给主 agent
+    monkeypatch.setattr(tools_pkg, "discover_tool_modules", lambda: [_template, writer])
     settings = _settings(tmp_path)
     assert len(tools_pkg.build_custom_tools(settings, read_only=True)) == 1
     with pytest.raises(tools_pkg.ToolLoadError, match="重复"):  # 主 agent 两个都要（这里同名所以报重复）
@@ -279,7 +255,7 @@ async def test_main_agent_delegates_review(tmp_path: Path):
         ("", [("task_tool", {"subagent_type": "code_reviewer", "task_description": "代码检视。用户的要求：检视当前未提交的改动"})]),
         # code_reviewer：读技能、取改动、只读命令放行、写命令被拒、没有写工具
         ("", [("skill_tool", {"skill_name": "code-review"})]),
-        ("", [("git_changes", {})]),
+        ("", [("bash", {"command": "git diff"})]),
         ("", [("bash", {"command": "git status --short"})]),
         ("", [("bash", {"command": "echo hacked > pwned.txt"})]),
         ("", [("write_file", {"file_path": "pwned2.txt", "content": "x"})]),
@@ -302,18 +278,18 @@ async def test_main_agent_delegates_review(tmp_path: Path):
     assert "代码检视子代理" in child_calls[0]["system"]     # 用的是 code_reviewer 的提示词
     offered = {getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
                for t in child_calls[0]["tools"]}
-    assert {"read_file", "grep", "bash", "git_changes", "skill_tool"} <= offered
+    assert {"read_file", "grep", "bash", "skill_tool"} <= offered
     assert not {"write_file", "edit_file", "task_tool", "ask_user", "question"} & offered
 
     records = [json.loads(line) for line in settings.audit_log_path.read_text(encoding="utf-8").splitlines()]
     child = {(r["tool"], str((r.get("args") or {}).get("command", ""))): r for r in records if r["agent"] == "code_reviewer"}
-    assert child[("git_changes", "")]["ok"] and "app.py" in child[("git_changes", "")]["result_preview"]
+    assert child[("bash", "git diff")]["decision"] == "executed" and "app.py" in child[("bash", "git diff")]["result_preview"]
     assert child[("bash", "git status --short")]["decision"] == "executed"
     assert child[("bash", "echo hacked > pwned.txt")]["decision"] == "rejected_by_guard"
     assert child[("skill_tool", "")]["ok"]
     assert any(r["agent"] == "main" and r["tool"] == "task_tool" and r["ok"] for r in records)
 
-    assert [e["tool_name"] for e in seen if e["type"] == "tool_call"][:3] == ["skill_tool", "git_changes", "bash"]
+    assert [e["tool_name"] for e in seen if e["type"] == "tool_call"][:3] == ["skill_tool", "bash", "bash"]
     assert all(e["agent"] == "code_reviewer" for e in seen)
     assert bundle.usage.model_calls >= len(streamed)        # 子 agent 的模型调用也计入 /usage
 

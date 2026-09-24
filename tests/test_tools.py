@@ -20,7 +20,7 @@ def test_discovers_every_tool_file(tmp_path: Path):
     files = sorted(p.stem for p in Path(importlib.import_module("mole_agent.tools").__path__[0]).glob("*.py")
                    if not p.stem.startswith("_"))
     assert [m.__name__.rsplit(".", 1)[-1] for m in discover_tool_modules()] == files
-    assert {"project_overview", "git_changes"} <= set(files)
+    assert "question" in files
 
 
 def test_file_name_equals_tool_name(tmp_path: Path):
@@ -71,9 +71,9 @@ def test_broken_tool_module_reports_file(tmp_path: Path, monkeypatch):
 
 def test_duplicate_tool_names_rejected(tmp_path: Path, monkeypatch):
     import mole_agent.tools as tools_pkg
-    from mole_agent.tools import project_overview
+    from mole_agent.tools import _template
 
-    monkeypatch.setattr(tools_pkg, "discover_tool_modules", lambda: [project_overview, project_overview])
+    monkeypatch.setattr(tools_pkg, "discover_tool_modules", lambda: [_template, _template])
     with pytest.raises(ToolLoadError, match="重复"):
         tools_pkg.build_custom_tools(_settings(tmp_path))
 
@@ -82,10 +82,10 @@ def test_enabled_hook_can_skip_tool(tmp_path: Path, monkeypatch):
     import types
 
     import mole_agent.tools as tools_pkg
-    from mole_agent.tools import git_changes
+    from mole_agent.tools import _template
 
     off = types.ModuleType("mole_agent.tools.off")
-    off.create = git_changes.create
+    off.create = _template.create
     off.enabled = lambda settings: False
     monkeypatch.setattr(tools_pkg, "discover_tool_modules", lambda: [off])
     assert tools_pkg.build_custom_tools(_settings(tmp_path)) == []
