@@ -6,6 +6,7 @@ before/after_tool_call 等），priority 越大越先执行。这里演示几类
 - CommandGuardRail：硬拦截。bash 命令命中拒绝规则直接驳回，不执行、也不打扰用户。
 - ApprovalRail：人工确认。继承 SDK 的 ConfirmInterruptRail，高危工具先中断等人确认，
   并支持「本会话总是允许」。
+- QuestionRail：模型调用 question 工具向用户提问时中断，等用户在终端回答后把答案作为工具结果交回。
 - ReadOnlyShellRail：子 agent 专用，bash 只放行只读命令。
 - ToolTraceRail：旁路观测。把工具调用写进输出流（给终端 UI 渲染）并落审计日志；
   子 agent 的调用经 ActivityFeed 转给终端。
@@ -28,11 +29,13 @@ from typing import Any, Callable, Iterable, Optional
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.session.interaction.base import AgentInterrupt
 from openjiuwen.core.session.stream.base import OutputSchema
+from openjiuwen.core.single_agent.interrupt import InterruptRequest
 from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.harness.rails import BaseInterruptRail, ConfirmInterruptRail
 from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
 
 from mole_agent.config import SHELL_TOOLS
+from mole_agent.tools import question as question_tool
 
 # rail 之间通过 ctx.extra 通信：记录被驳回的调用，供 ToolTraceRail 标记和审计
 _REJECTED_KEY = "mole_rejected_calls"
@@ -455,3 +458,31 @@ class ApprovalRail(ConfirmInterruptRail):
         if isinstance(decision, RejectResult):
             _mark_rejected(ctx, tool_call, "user")
         return decision
+
+
+class QuestionRequest(InterruptRequest):
+    """question 工具的中断请求：带上整理过（补齐默认值）的问题，终端据此显示。"""
+
+    questions: list[dict] = []
+
+
+class QuestionRail(BaseInterruptRail):
+    """拦下 question 工具：先中断等用户回答，恢复后把答案作为工具结果交回模型（工具本身不执行）。
+
+    参数不合法时不打扰用户，直接把错误说明作为工具结果返回，让模型改好再问。
+    """
+
+    priority = 90  # 与 ApprovalRail 同级；只处理 question，二者拦截的工具不重叠
+
+    def __init__(self) -> None:
+        super().__init__(tool_names=[question_tool.NAME])
+
+    async def resolve_interrupt(self, ctx, tool_call, user_input, auto_confirm_config=None):
+        questions, error = question_tool.normalize_questions(getattr(tool_call, "arguments", None))
+        if error:
+            return self.reject(tool_result=f"Error: {error}")
+        if user_input is not None:
+            answers = question_tool.parse_answers(user_input, questions)
+            if answers is not None:
+                return self.reject(tool_result=question_tool.format_answers(questions, answers))
+        return self.interrupt(QuestionRequest(questions=[q.to_dict() for q in questions]))

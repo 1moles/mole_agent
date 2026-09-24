@@ -74,6 +74,9 @@ def _short(text: Any, limit: int = 100) -> str:
 def _format_args(tool_name: str, args: Any) -> str:
     if tool_name == "task_tool" and isinstance(args, dict):
         return _short(f"{args.get('subagent_type', '?')} · {args.get('task_description', '')}", 90)
+    if tool_name == "question" and isinstance(args, dict) and isinstance(args.get("questions"), list):
+        titles = [str(q.get("header") or q.get("question") or "") for q in args["questions"] if isinstance(q, dict)]
+        return _short("、".join(t for t in titles if t), 90)
     if isinstance(args, dict):
         for key in ("command", "file_path", "path", "pattern", "query", "url"):
             if args.get(key):
@@ -356,6 +359,10 @@ class StreamRenderer:
         if name == "task_tool" and ok:
             console.print(f"[dim]  ⎿ 子 agent 完成，报告 {len(lines)} 行{suffix}[/dim]")
             return
+        if name == "question" and len(lines) > 2:   # 逐条显示回答（去掉首尾两行固定说明）
+            for line in lines[1:-1]:
+                console.print(f"[dim]  ⎿ {esc(line.lstrip('- '))}[/dim]")
+            return
         if name.startswith("todo_") and lines:
             for line in lines[:12]:
                 console.print(f"[dim]  ⎿ {esc(line)}[/dim]")
@@ -458,9 +465,13 @@ class Repl:
                 self.history.assistant(item)
             else:
                 name = str(_attr(item, "tool_name", ""))
+                text = str(_attr(item, "text", "") or "")
+                if name == "question":   # 历史里只记一行：把每个问题的回答拼起来，去掉首尾的固定说明
+                    lines = [line.strip().lstrip("- ") for line in text.splitlines() if line.strip()]
+                    text = "；".join(lines[1:-1]) or text
                 self.history.tool(
                     name, _format_args(name, _attr(item, "tool_args")), bool(_attr(item, "ok", True)),
-                    str(_attr(item, "decision", "")), str(_attr(item, "text", "") or ""),
+                    str(_attr(item, "decision", "")), text,
                 )
 
     async def _ask(self, message: str) -> str:
@@ -473,40 +484,57 @@ class Repl:
         for item in pending:
             req = item.request
             tool_name = _attr(req, "tool_name", "")
-            if tool_name == "ask_user":
-                interactive.update(item.interaction_id, await self._answer_ask_user(req))
+            if tool_name == "question":
+                interactive.update(item.interaction_id, await self._answer_question(req))
             else:
                 interactive.update(item.interaction_id, await self._answer_approval(tool_name, req))
         return interactive
 
-    async def _answer_ask_user(self, req: Any) -> dict[str, Any]:
-        questions = _attr(req, "questions") or []
-        console.print("\n[bold magenta]? 需要你的输入[/bold magenta]")
-        if not questions:
-            args = _attr(req, "tool_args")
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except ValueError:
-                    pass
-            question = (args.get("query") if isinstance(args, dict) else None) or _attr(req, "message", "")
-            console.print(f"  {question}", markup=False)
-            return {"answer": await self._ask("回答 › ")}
+    async def _answer_question(self, req: Any) -> dict[str, Any]:
+        """question 工具：逐个问题显示选项，收集回答。每个问题的回答是标签数组，回车跳过得到空数组。"""
+        from mole_agent.tools.question import CUSTOM_OPTION_LABEL, normalize_questions
 
-        answers: dict[str, str] = {}
-        for i, q in enumerate(questions, 1):
-            header = _attr(q, "header", f"Q{i}")
-            text = _attr(q, "question", "")
-            options = _attr(q, "options") or []
-            console.print(f"\n[cyan]{esc(header)}[/cyan] {esc(text)}")
-            for j, opt in enumerate(options, 1):
-                desc = _attr(opt, "description", "")
-                console.print(f"  [dim]{j}.[/dim] {esc(str(_attr(opt, 'label', '')))}" + (f" [dim]- {esc(str(desc))}[/dim]" if desc else ""))
-            ans = await self._ask("回答（可填序号或自由输入） › ")
-            if ans.isdigit() and 1 <= int(ans) <= len(options):
-                ans = str(_attr(options[int(ans) - 1], "label", ans))
-            answers[text] = ans
+        questions, _ = normalize_questions({"questions": list(_attr(req, "questions") or [])})
+        total = f"（共 {len(questions)} 个问题）" if len(questions) > 1 else ""
+        console.print(f"\n[bold magenta]? 需要你的输入[/bold magenta][dim]{total}[/dim]")
+        answers: list[list[str]] = []
+        for q in questions:
+            mode = ("可多选" if q.multiple else "单选") if q.options else "直接输入回答"
+            header = f"[cyan]{esc('[' + _short(q.header, 30) + ']')}[/cyan] " if q.header else ""
+            console.print(f"\n{header}{esc(q.question)} [dim]（{mode}）[/dim]")
+            for j, option in enumerate(q.options, 1):
+                desc = f" [dim]- {esc(option['description'])}[/dim]" if option.get("description") else ""
+                console.print(f"  [dim]{j}.[/dim] {esc(option['label'])}{desc}")
+            if q.custom and q.options:
+                console.print(f"  [dim]{len(q.options) + 1}. {CUSTOM_OPTION_LABEL}[/dim]")
+            answers.append(await self._ask_one_question(q))
         return {"answers": answers}
+
+    async def _ask_one_question(self, q: Any) -> list[str]:
+        from mole_agent.tools.question import parse_selection
+
+        how = "输入序号" + ("，多个用逗号或空格隔开" if q.multiple and q.options else "")
+        if not q.options:
+            how = "输入你的答案"
+        elif q.custom:
+            how += "，或直接输入答案"
+        while True:
+            selection = parse_selection(await self._ask(f"{how}；回车跳过 › "), q)
+            if selection.error:
+                console.print(f"  {selection.error}", style="yellow", markup=False)
+                continue
+            if selection.skip:
+                return []
+            if selection.text:
+                return [selection.text]
+            labels = list(selection.labels)
+            if selection.want_custom:
+                text = await self._ask("你的答案 › ")
+                if text:
+                    labels.append(text)
+                elif not labels:
+                    continue   # 选了「自己输入答案」又什么都没填：重新问
+            return labels
 
     async def _answer_approval(self, tool_name: str, req: Any) -> dict[str, Any]:
         args = _attr(req, "tool_args")

@@ -18,8 +18,8 @@ description: 检视 Mole（kernel 项目）的代码改动——未提交改动�
 | 分支、「和 main 比」 | `git_changes`，`base=<分支>`（看 `<分支>...HEAD`） |
 | 指定文件或目录 | 直接 `read_file`，按整份代码检视 |
 
-范围不明确（比如分不清要对比哪个分支）时用 `ask_user` 问，不要猜；作为 `code_reviewer` 子 agent 运行时
-没有 `ask_user`，按最合理的理解检视，并在「检视范围」里写明假设。
+范围不明确（比如分不清要对比哪个分支）时用 `question` 工具问，不要猜；作为 `code_reviewer` 子 agent 运行时
+没有 `question`，按最合理的理解检视，并在「检视范围」里写明假设。
 新增的未跟踪文件（status 里的 `??`）不在 diff 里，要单独 `read_file`。
 
 ## 2. 理解改动，再下结论

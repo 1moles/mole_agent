@@ -93,6 +93,36 @@ REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可�
 
 `/history` 和 `/resume` 同样支持命令名补全；会话序号或 id 需手动输入，暂不提供会话参数候选。
 
+### 向你提问（question 工具）
+
+需求不明确、有几种做法可选、或者执行中发现情况和预期不一样时，agent 会调用常驻的 `question` 工具停下来问你
+（代替 SDK 自带的 `ask_user`）。一次可以问几个问题，每个问题有单选或多选，选项最后自动加上「自己输入答案」：
+
+```
+? 需要你的输入（共 2 个问题）
+
+[数据库] 用哪个数据库？ （单选）
+  1. PostgreSQL (Recommended) - 功能全
+  2. SQLite - 零配置
+  3. 自己输入答案
+输入序号，或直接输入答案；回车跳过 › 1
+
+[功能] 要哪些功能？ （可多选）
+  1. 登录
+  2. 日志
+  3. 缓存
+输入序号，多个用逗号或空格隔开；回车跳过 › 1,3
+● question(数据库、功能)
+  ⎿ "用哪个数据库？" = ["PostgreSQL (Recommended)"]
+  ⎿ "要哪些功能？" = ["登录", "缓存"]
+```
+
+- 输入序号（多选用逗号、空格或顿号隔开），也可以直接打选项的文字；允许自定义时直接打你自己的答案，
+  或者选「自己输入答案」那一项再输入。回车跳过这个问题，agent 会自己拿主意。
+- 回答以标签数组交回 agent；回答中途 `Ctrl+C` 会中断任务，续聊（`/resume`、`mole -c`）时先把问题重新问一遍。
+- 常驻：工具卡片声明为直接可见，即使打开 SDK 的渐进式工具加载（`tool_search`）也不会被藏起来。
+- 子 agent 没有这个工具（它们在 `task_tool` 里运行，问题传不到终端），会按最合理的理解继续并写明假设。
+
 ### 会话历史与续聊
 
 每次对话都按 openjiuwen 自带的 `SessionStore`（`openjiuwen.harness.cli.storage`）格式记下来，一个会话一个 JSON 文件，
@@ -309,7 +339,7 @@ models = ["<部署的模型名>"]
 | 文件沙箱 | 文件工具和命令里引用的路径只能落在项目目录、agent 工作区和技能目录 | `MOLE_RESTRICT_TO_PROJECT` |
 | 命令黑名单 | `CommandGuardRail`：sudo、rm -rf /、强推、reset --hard、curl\|sh，以及 Windows 上删整个盘、格式化、iwr\|iex 等直接驳回；命令按 `\|` `&&` `;` 单个 `&` 和换行切开逐段检查 | `config.DEFAULT_BASH_DENY` + `MOLE_EXTRA_BASH_DENY` |
 | 人工确认 | `ApprovalRail`：写文件、改文件、执行命令（bash / powershell）前询问；`a` = 本会话总是允许 | `MOLE_CONFIRM_TOOLS`，`-y` 关闭 |
-| 子 agent 只读 | 没有写文件工具；bash 只放行 `ls` / `cat` / `grep` / `git diff` 等只读命令，powershell 一律拒绝（`ReadOnlyShellRail`）；不挂人工确认 | `rails.read_only_violation` |
+| 子 agent 只读 | 没有写文件工具和 `question`；bash 只放行 `ls` / `cat` / `grep` / `git diff` 等只读命令，powershell 一律拒绝（`ReadOnlyShellRail`）；不挂人工确认 | `rails.read_only_violation` |
 | 审计 | 每次工具调用一行 JSONL（`agent` 字段区分主 agent 和各子 agent） | `MOLE_AUDIT_LOG` |
 
 > 注意：SDK 的 `BashTool` 自带 `deny_patterns`，但只在环境变量 `OPENJIUWEN_BASH_STRICT=1` 时生效，
@@ -335,7 +365,8 @@ mole_agent/tools/
 ├── _common.py           共用函数：resolve_inside（路径限制在项目内）、truncate（输出截断）
 ├── _template.py         新工具模板（下划线开头的文件不会被加载）
 ├── git_changes.py
-└── project_overview.py
+├── project_overview.py
+└── question.py          向用户提问；由 rails.QuestionRail 中断等回答，不会真正执行
 ```
 
 复制 `_template.py` 为 `<工具名>.py`（文件名与工具名一致），实现 `create(settings) -> Tool`，重启 mole 即可。
@@ -432,6 +463,8 @@ pytest -q        # 不联网、不需要 API key
   DNS / TCP / 代理 CONNECT / 证书 / 加密套件各步骤（本机临时服务，不联网）
 - `tests/test_stream_only.py`：起一个拒绝非流式请求的假网关，确认 `stream_only` 下 `--check`、带解析器的调用、
   工具调用、上下文压缩都能通过流式拼接得到完整结果；没打开时压缩被拒，终端说明原因
+- `tests/test_question.py`：`question` 工具——常驻声明、参数校验、单选 / 多选 / 自定义 / 跳过的输入解析、
+  问答后继续执行、输错重问、参数不对时不打扰用户直接让模型重来、中断后续聊重新提问（假模型端到端）
 - `tests/test_context.py`：`/context` 的占用和阈值、`/compact`（带保留要求、失败原因、重启后仍是压缩后的上下文、
   续聊后未发消息时不装压缩器也不会弄丢压缩器）、自动压缩的一行提示（慢时先显示进度）、
   模型报超长（英文 / 中文报错）后压缩重试

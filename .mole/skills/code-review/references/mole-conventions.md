@@ -31,7 +31,7 @@
 ## Rails
 
 - 每个 rail 都要显式定义 `priority`，并在注释里说明为什么排在谁前后。当前顺序：
-  `CommandGuardRail(95) > ApprovalRail(90) > CompressionRail(50，init 要排在 ContextProcessorRail(85) 之后)
+  `CommandGuardRail(95) > ApprovalRail(90) = QuestionRail(90，只拦 question) > CompressionRail(50，init 要排在 ContextProcessorRail(85) 之后)
   > TokenUsageRail(10) > ToolTraceRail(5)`；
   子 agent 用 `ReadOnlyShellRail(95)` 代替 `CommandGuardRail` + `ApprovalRail`。
 - `DeepAgentRail` 子类的 `__init__` 必须调用 `super().__init__()`。
@@ -62,7 +62,7 @@
 - 一个子 agent 一个文件：`subagents/<子agent名>.py`，文件名与 `agent_card.name` 一致；提供
   `create(env: SubagentEnv) -> SubAgentConfig`，可选 `enabled(settings)`。靠自动发现注册，不要在 `agent.py` 里手工加。
 - SDK 已有的子 agent 直接用它的构建函数（如 `build_explore_agent_config`），不要复制它的提示词。
-- **阻塞**：子 agent 挂 `ApprovalRail` / `AskUserRail`，或拿到写文件工具（`SysOperationRail` 必须 `read_only=True`）。
+- **阻塞**：子 agent 挂 `ApprovalRail` / `QuestionRail`，或拿到 `question` / 写文件工具（`SysOperationRail` 必须 `read_only=True`）。
   task_tool 内部运行子 agent，中断不会传到终端（openjiuwen 0.1.18），会卡住或绕过确认。
 - rails 统一从 `SubagentEnv.read_only_rails()` 取，保证只读 shell、审计（`agent` 字段）、终端进度和 token 统计一致；
   新加的 rail 用 `per_instance` 包装，让每个子 agent 实例各用一份（`TokenUsageRail` 故意共用）。

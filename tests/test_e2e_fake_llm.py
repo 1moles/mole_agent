@@ -103,7 +103,8 @@ async def test_full_flow(env):
     # 模型拿到的工具里应包含内置工具和自定义工具
     offered = next(c["tools"] for c in fake.calls if c.get("tools"))
     names = {getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None) for t in offered}
-    assert {"read_file", "edit_file", "bash", "ask_user", "project_overview", "git_changes"} <= names
+    assert {"read_file", "edit_file", "bash", "question", "project_overview", "git_changes"} <= names
+    assert "ask_user" not in names   # 由 question 代替
 
     # 2) 用户拒绝 → 不执行
     fake.plan(("", [("bash", {"command": "echo nope > rejected.txt"})]), ("好的。", []))

@@ -30,7 +30,7 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode, SysOperation, SysOperationCard
 from openjiuwen.harness import create_deep_agent
-from openjiuwen.harness.rails import AskUserRail, SkillUseRail, SysOperationRail
+from openjiuwen.harness.rails import SkillUseRail, SysOperationRail
 from openjiuwen.harness.workspace.workspace import Workspace
 
 from mole_agent.config import AGENT_ID, Settings
@@ -38,7 +38,7 @@ from mole_agent.context import CompressionWatcher, extend_overflow_detection
 from mole_agent.models import ModelChoice, ModelSelectionError
 from mole_agent.prompts import build_system_prompt
 from mole_agent.rails import (
-    ActivityFeed, ApprovalRail, CommandGuardRail, CompressionRail, TokenUsageRail, ToolTraceRail,
+    ActivityFeed, ApprovalRail, CommandGuardRail, CompressionRail, QuestionRail, TokenUsageRail, ToolTraceRail,
 )
 from mole_agent.tools import build_custom_tools
 
@@ -341,7 +341,7 @@ def build_agent(settings: Settings) -> AgentBundle:
         # （bash_deny_patterns 仅在 OPENJIUWEN_BASH_STRICT=1 时由 SDK 生效，常态由 CommandGuardRail 兜底）
         SysOperationRail(bash_deny_patterns=settings.bash_deny_patterns),
         CommandGuardRail(settings.bash_deny_patterns),  # 危险命令硬拦截
-        AskUserRail(),          # 注册 ask_user 工具：模型可以反问用户
+        QuestionRail(),         # 拦下 question 工具（tools/question.py）：中断等用户回答，代替 SDK 的 ask_user
         SkillUseRail(           # 加载 SKILL.md 技能（目录不存在会被跳过）
             skills_dir=[str(p) for p in settings.skills_dirs],
             skill_mode="all",

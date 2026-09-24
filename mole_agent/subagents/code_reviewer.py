@@ -43,7 +43,7 @@ _PROMPT_CN = """\
 ## 流程
 1. 技能列表里有代码检视技能（如 code-review）时，先用 skill_tool 读取它并严格按它执行：技能里的范围判断、
    检查项和输出格式优先于下面的通用要求，技能提到的 references 文件也用 skill_tool 读取。
-   你没有 ask_user：范围不明确时按最合理的理解检视，并在报告开头写明你的假设。
+   你没有 question 工具：范围不明确时按最合理的理解检视，并在报告开头写明你的假设。
 2. 确定范围：按任务描述；没写就检视未提交改动。用 git_changes 取改动：默认未提交改动，
    staged=true 看暂存区，commit=<提交> 看某个提交，base=<分支> 看当前分支相对该分支的全部改动；
    指定文件时直接 read_file。未跟踪的新文件（status 里的 ??）不在 diff 里，要单独 read_file。
@@ -79,7 +79,7 @@ You are a code review subagent working for a host coding agent. Review the chang
 You only have file reading, search, read-only shell commands and git_changes. You cannot modify files, run tests or install anything (such calls are rejected). Put anything that needs running under "Unverified" for the host agent to decide.
 
 ## Process
-1. If the skill list has a code review skill (e.g. code-review), read it with skill_tool first and follow it strictly; its scope rules, checklist and output format override the generic guidance below. Read its references with skill_tool too. You have no ask_user: if the scope is unclear, pick the most reasonable reading and state your assumption at the top of the report.
+1. If the skill list has a code review skill (e.g. code-review), read it with skill_tool first and follow it strictly; its scope rules, checklist and output format override the generic guidance below. Read its references with skill_tool too. You have no question tool: if the scope is unclear, pick the most reasonable reading and state your assumption at the top of the report.
 2. Scope: follow the task description; default to uncommitted changes. Use git_changes: default = uncommitted, staged=true = index, commit=<rev> = one commit, base=<branch> = current branch vs base. For given files, read_file them. Untracked files (?? in status) are not in the diff; read them separately.
 3. Read every changed file in full with read_file and grep for callers and tests. Never judge from diff hunks alone.
 4. Check in order: correctness > security > compatibility > tests > maintainability > performance. Every finding needs evidence in the code; prefer fewer, real findings.

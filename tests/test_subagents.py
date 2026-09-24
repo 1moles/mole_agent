@@ -129,7 +129,7 @@ def test_explore_agent_uses_sdk_builtin(tmp_path: Path):
 def test_subagents_are_read_only(tmp_path: Path):
     for config in build_subagents(_env(_settings(tmp_path))):
         types = _rail_types(config)
-        assert "ApprovalRail" not in types and "AskUserRail" not in types, config.agent_card.name
+        assert not {"ApprovalRail", "AskUserRail", "QuestionRail"} & set(types), config.agent_card.name
         sysop = next(r for r in config.rails if type(r).__name__ == "SysOperationRail")
         assert sysop._read_only is True  # noqa: SLF001 —— 测试里检查 SDK rail 的配置
         assert {t.card.name for t in config.tools} == {"git_changes", "project_overview"}
@@ -303,7 +303,7 @@ async def test_main_agent_delegates_review(tmp_path: Path):
     offered = {getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
                for t in child_calls[0]["tools"]}
     assert {"read_file", "grep", "bash", "git_changes", "skill_tool"} <= offered
-    assert not {"write_file", "edit_file", "task_tool", "ask_user"} & offered
+    assert not {"write_file", "edit_file", "task_tool", "ask_user", "question"} & offered
 
     records = [json.loads(line) for line in settings.audit_log_path.read_text(encoding="utf-8").splitlines()]
     child = {(r["tool"], str((r.get("args") or {}).get("command", ""))): r for r in records if r["agent"] == "code_reviewer"}
