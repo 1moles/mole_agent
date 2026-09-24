@@ -36,6 +36,8 @@ HELP_TEXT = """\
   /models [供应商]   在线查询供应商当前可用的模型
   /review [范围或要求]  代码检视（只读）：默认未提交改动，也可以 /review 提交 a1b2c3d、/review 和 main 比
   /new               开启新会话（清空上下文和「总是允许」记录）
+  /history [序号]    查看当前项目的历史会话，选序号看详情（看完可以按 r 接着聊）
+  /resume [序号]     回到某个历史会话继续聊（恢复完整上下文）；启动时 mole -c 继续最近的会话
   /usage             查看本会话 token 用量
   /help              显示帮助
   /exit              退出
@@ -142,14 +144,29 @@ class StreamRenderer:
     verbose: bool = False
     pending: list[Pending] = field(default_factory=list)
     text_parts: list[str] = field(default_factory=list)
+    # 按出现顺序记下回复文本和工具结果，写进会话历史：("assistant", 文本) / ("tool", payload)
+    transcript: list[tuple[str, Any]] = field(default_factory=list)
+    _segment: list[str] = field(default_factory=list)
     _in_text: bool = False
     _saw_llm_output: bool = False
 
+    def _flush_segment(self) -> None:
+        if self._segment:
+            self.transcript.append(("assistant", "".join(self._segment)))
+            self._segment = []
+
     def _end_text(self) -> None:
+        self._flush_segment()
         if self._in_text:
             sys.stdout.write("\n")
             sys.stdout.flush()
             self._in_text = False
+
+    def take_transcript(self) -> list[tuple[str, Any]]:
+        """取走目前为止的记录（中断时也能拿到已输出的部分）。"""
+        self._flush_segment()
+        items, self.transcript = self.transcript, []
+        return items
 
     def _write_text(self, text: str) -> None:
         if not text:
@@ -160,6 +177,7 @@ class StreamRenderer:
         sys.stdout.write(text)
         sys.stdout.flush()
         self.text_parts.append(text)
+        self._segment.append(text)
 
     def feed(self, chunk: Any) -> None:
         ctype = _attr(chunk, "type", "")
@@ -222,6 +240,7 @@ class StreamRenderer:
             console.print(f"  │   ✗ {_short(event.get('text', ''), 140)}", style="red", markup=False)
 
     def _render_tool_result(self, payload: Any) -> None:
+        self.transcript.append(("tool", payload))
         name = _attr(payload, "tool_name", "")
         ok = _attr(payload, "ok", True)
         text = str(_attr(payload, "text", "") or "")
@@ -264,6 +283,18 @@ class Repl:
         settings.home_dir.mkdir(parents=True, exist_ok=True)
         self._prompt: Any = None
         self._answer_prompt: Any = None
+        self.history: Any = None  # history.HistoryRecorder；MOLE_SAVE_HISTORY=false 时为 None
+        self.checkpoint: Any = None  # history.ContextCheckpoint，由 _amain 打开；为 None 时不能续聊
+        self.checkpoint_error = "没有开启会话历史（MOLE_SAVE_HISTORY=false）" if not settings.save_history else ""
+        if settings.save_history:
+            try:
+                from mole_agent.history import HistoryRecorder
+
+                self.history = HistoryRecorder(settings)
+                self.history.start(self.session_id, settings.model_spec)
+            except Exception as exc:  # noqa: BLE001 —— 历史记录是辅助功能，失败不影响使用
+                console.print(f"[yellow]⚠ 会话历史不可用：{esc(str(exc))}[/yellow]")
+                self.history = None
 
     # 输入框按需创建：非终端环境（测试、管道）下不需要 prompt_toolkit
     @property
@@ -302,12 +333,26 @@ class Repl:
                     renderer.feed(chunk)
             finally:
                 unsubscribe()
+                self._record(renderer.take_transcript())
             final = renderer.finish() or final
             if not renderer.pending:
                 return final
             query = await self._collect_answers(renderer.pending)
             if query is None:
                 return final
+
+    def _record(self, transcript: list[tuple[str, Any]]) -> None:
+        if self.history is None:
+            return
+        for kind, item in transcript:
+            if kind == "assistant":
+                self.history.assistant(item)
+            else:
+                name = str(_attr(item, "tool_name", ""))
+                self.history.tool(
+                    name, _format_args(name, _attr(item, "tool_args")), bool(_attr(item, "ok", True)),
+                    str(_attr(item, "decision", "")), str(_attr(item, "text", "") or ""),
+                )
 
     async def _ask(self, message: str) -> str:
         return (await self.answer_prompt.prompt_async(message)).strip()
@@ -394,7 +439,13 @@ class Repl:
             if self.bundle.approval:
                 self.bundle.approval.always_allow.clear()
             self.bundle.usage.reset()
+            if self.history is not None:
+                self.history.start(self.session_id, self.settings.model_spec)
             console.print(f"[dim]已开启新会话 {self.session_id}[/dim]")
+        elif cmd == "/history":
+            await self._cmd_history(rest.strip())
+        elif cmd == "/resume":
+            await self._cmd_resume(rest.strip())
         elif cmd == "/usage":
             s = self.bundle.usage.summary()
             console.print(
@@ -439,6 +490,98 @@ class Repl:
 
         switch_model(self.bundle, self.settings, choice)
         save_last_model(self.settings.state_path, choice.spec)
+        if self.history is not None:
+            self.history.system(f"切换模型：{choice.spec}")
+
+    # ---------- 会话历史与续聊 ----------
+    async def _pick_session(self, arg: str, action: str) -> Any:
+        """按序号 / 会话 id 前缀选一个历史会话；不带参数时列出来让用户选。返回 SessionSummary 或 None。"""
+        from mole_agent.history import list_sessions
+
+        items = list_sessions(self.history.dir, limit=HISTORY_LIST_LIMIT)
+        if not items:
+            console.print("[dim]当前项目还没有历史会话[/dim]")
+            return None
+        if not arg:
+            print_history_list(items, self.session_id, self.settings.project_dir.name)
+            arg = await self._ask(f"输入序号{action}（回车返回） › ")
+            if not arg:
+                return None
+        if arg.isdigit():
+            if not 1 <= int(arg) <= len(items):
+                console.print(f"[red]序号超出范围：1-{len(items)}[/red]")
+                return None
+            return items[int(arg) - 1]
+        hits = [s for s in items if s.id.startswith(arg)]  # 也可以直接写会话 id（或能唯一确定它的前缀）
+        if len(hits) != 1:
+            console.print(f"[red]{'找不到' if not hits else '有多个'}以 {esc(arg)} 开头的会话[/red]")
+            return None
+        return hits[0]
+
+    async def _cmd_history(self, arg: str) -> None:
+        if self.history is None:
+            console.print("[dim]没有开启会话历史（MOLE_SAVE_HISTORY=false）[/dim]")
+            return
+        from mole_agent.history import load_session
+
+        target = await self._pick_session(arg, "查看详情")
+        if target is None:
+            return
+        session = load_session(self.history.dir, target.id)
+        if session is None:
+            console.print(f"[red]读取会话 {esc(target.id)} 失败（文件不存在或已损坏）[/red]")
+            return
+        current = session.session_id == self.session_id
+        print_session_detail(session, current=current)
+        if current or self.checkpoint is None or not await self.checkpoint.exists(session.session_id):
+            return
+        if (await self._ask("输入 r 从这里继续聊（回车返回） › ")).lower() in {"r", "resume", "继续"}:
+            await self.resume(session.session_id)
+
+    async def _cmd_resume(self, arg: str) -> None:
+        if self.history is None:
+            console.print("[dim]没有开启会话历史（MOLE_SAVE_HISTORY=false），不能续聊[/dim]")
+            return
+        target = await self._pick_session(arg, "继续聊")
+        if target is not None:
+            await self.resume(target.id)
+
+    async def resume(self, session_id: str) -> bool:
+        """切换到历史会话：之后的对话用它的会话 id，SDK 从检查点里恢复完整上下文。"""
+        from mole_agent.history import load_session
+
+        if session_id == self.session_id:
+            console.print("[dim]已经在这个会话里了[/dim]")
+            return True
+        if self.checkpoint is None:
+            console.print(f"[yellow]续聊不可用：{esc(self.checkpoint_error or '检查点没有打开')}[/yellow]")
+            return False
+        if not await self.checkpoint.exists(session_id):
+            console.print("[yellow]这个会话没有保存对话上下文（多半是开启续聊之前的会话），只能用 /history 查看[/yellow]")
+            return False
+        stored = load_session(self.history.dir, session_id) if self.history is not None else None
+        self.session_id = session_id
+        if self.bundle.approval:
+            self.bundle.approval.always_allow.clear()  # 「总是允许」只对当前这次会话有效，不跟着历史会话走
+        self.bundle.usage.reset()
+        if self.history is not None and stored is not None:
+            self.history.resume(stored)
+            self.history.system(f"继续会话（模型 {self.settings.model_spec}）")
+        print_resume_summary(stored, session_id, self.settings.model_spec)
+        return True
+
+    async def continue_latest(self) -> bool:
+        """mole -c：继续当前项目最近一个能续聊的会话。"""
+        from mole_agent.history import list_sessions
+
+        if self.history is None or self.checkpoint is None:
+            console.print(f"[yellow]续聊不可用：{esc(self.checkpoint_error or '检查点没有打开')}，已开启新会话[/yellow]")
+            return False
+        for item in list_sessions(self.history.dir):
+            if item.id != self.session_id and await self.checkpoint.exists(item.id):
+                return await self.resume(item.id)
+        console.print("[dim]当前项目没有可以继续的会话，已开启新会话[/dim]")
+        return False
 
     async def _cmd_models(self, arg: str) -> None:
         name = arg or self.settings.provider_name
@@ -460,7 +603,10 @@ class Repl:
         console.print(f"[dim]共 {len(ids)} 个。切换：/model {esc(name)}/<模型名>；常用的可加到 models.toml 的 models 列表[/dim]")
 
     # ---------- 带 Ctrl+C 中断的执行 ----------
-    async def run_interruptible(self, text: str) -> None:
+    async def run_interruptible(self, text: str, label: str | None = None) -> None:
+        """label：写进历史的用户输入（斜杠命令展开成长提示词时，记录用户实际敲的命令）。"""
+        if self.history is not None:
+            self.history.user(label or text)
         loop = asyncio.get_running_loop()
         task = asyncio.create_task(self.run_turn(text))
         restore = _cancel_on_sigint(loop, task)
@@ -468,12 +614,16 @@ class Repl:
             await task
         except asyncio.CancelledError:
             console.print("\n[dim]⏹ 已中断[/dim]")
+            if self.history is not None:
+                self.history.system("已中断")
             try:
                 await self.bundle.agent.abort()
             except Exception:  # noqa: BLE001
                 pass
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]✗ {esc(_friendly_error(exc))}[/red]")
+            if self.history is not None:
+                self.history.system(f"出错：{_friendly_error(exc)}")
             if self.settings.verbose:
                 console.print_exception()
         finally:
@@ -489,6 +639,7 @@ class Repl:
                 break
             if not text:
                 continue
+            typed = text
             if text.startswith("/"):
                 try:
                     text = await self.handle_slash(text)
@@ -496,9 +647,64 @@ class Repl:
                     break
                 if not text:
                     continue
-            await self.run_interruptible(text)
+            await self.run_interruptible(text, label=typed)
             console.print()
         console.print("[dim]再见～[/dim]")
+
+
+HISTORY_LIST_LIMIT = 30
+_ROLE_STYLE = {"user": "bold cyan", "assistant": "", "tool": "dim", "system": "dim yellow"}
+
+
+def print_history_list(items: list[Any], current_id: str, project_name: str) -> None:
+    from mole_agent.history import local_time
+
+    note = f"，只显示最近 {HISTORY_LIST_LIMIT} 个" if len(items) >= HISTORY_LIST_LIMIT else ""
+    console.print(f"[bold]历史会话[/bold] [dim]{esc(project_name)} · 最近活动的在前{note}[/dim]")
+    for i, item in enumerate(items, 1):
+        mark = "  [green]← 当前[/green]" if item.id == current_id else ""
+        console.print(
+            f"  [dim]{i:>2}.[/dim] {esc(local_time(item.updated_at))}  [dim]{item.user_turns:>2} 轮 · "
+            f"{esc(item.model)}[/dim]  {esc(item.title)}{mark}"
+        )
+
+
+def print_session_detail(session: Any, current: bool = False) -> None:
+    from mole_agent.history import local_time
+
+    users = sum(1 for m in session.messages if m.role == "user")
+    title = f"{session.session_id} · {local_time(session.created_at)} · {session.model} · {users} 轮"
+    console.rule(esc(title + ("（当前会话）" if current else "")), style="dim")
+    for message in session.messages:
+        text = message.content.rstrip()
+        if message.role == "user":
+            console.print()
+            console.print(f"› {local_time(message.timestamp, '%H:%M')}", style="dim", end=" ")
+            console.print(text, style=_ROLE_STYLE["user"], markup=False)
+        elif message.role == "assistant":
+            console.print("●", style="bright_green", end=" ")
+            console.print(text, markup=False)
+        elif message.role == "tool":
+            console.print(f"  ⎿ {text}", style=_ROLE_STYLE["tool"], markup=False)
+        else:
+            console.print(f"  · {text}", style=_ROLE_STYLE.get(message.role, "dim"), markup=False)
+    console.rule(style="dim")
+
+
+def print_resume_summary(stored: Any, session_id: str, current_model: str) -> None:
+    """回到历史会话时，把最后一问一答亮出来，提醒聊到哪儿了。"""
+    if stored is None:
+        console.print(f"[green]✓ 已回到会话 {esc(session_id)}[/green][dim]（对话上下文已恢复）[/dim]")
+        return
+    users = [m for m in stored.messages if m.role == "user"]
+    replies = [m for m in stored.messages if m.role == "assistant"]
+    note = f"，原来用的是 {stored.model}，现在用 {current_model}" if stored.model and stored.model != current_model else ""
+    console.print(f"[green]✓ 已回到会话 {esc(session_id)}[/green][dim] · {len(users)} 轮{esc(note)} · 对话上下文已恢复[/dim]")
+    if users:
+        console.print(f"  [dim]上次问：[/dim]{esc(_short(users[-1].content, 120))}")
+    if replies:
+        console.print(f"  [dim]上次答：[/dim]{esc(_short(replies[-1].content, 120))}")
+    console.print("[dim]  如果上次停在等你确认的操作上，接着聊时会先重新问你[/dim]")
 
 
 def _cancel_on_sigint(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> Any:
@@ -670,17 +876,32 @@ async def _amain(args: argparse.Namespace) -> int:
     from mole_agent.agent import build_agent
 
     bundle = build_agent(settings)
+    checkpoint = None
+    repl = Repl(settings, bundle)
+    if settings.save_history:
+        from mole_agent.history import open_context_checkpoint
+
+        checkpoint, reason = await open_context_checkpoint(settings)
+        repl.checkpoint, repl.checkpoint_error = checkpoint, reason
+        if checkpoint is None:
+            console.print(f"[yellow]⚠ {esc(reason)}[/yellow]")
     await Runner.start()
     try:
-        repl = Repl(settings, bundle)
+        if not args.prompt:
+            _print_banner(settings, bundle)
+        if args.resume:
+            await repl._cmd_resume("" if args.resume is True else args.resume)
+        elif args.continue_:
+            await repl.continue_latest()
         if args.prompt:
             await repl.run_interruptible(args.prompt)
             return 0
-        _print_banner(settings, bundle)
         await repl.loop()
         return 0
     finally:
         await Runner.stop()
+        if checkpoint is not None:
+            await checkpoint.close()
 
 
 def main() -> None:
@@ -692,6 +913,10 @@ def main() -> None:
     parser.add_argument("-y", "--yes", action="store_true", help="所有工具自动执行，不再询问（慎用）")
     parser.add_argument("-v", "--verbose", action="store_true", help="显示思考过程与 SDK 日志")
     parser.add_argument("--check", action="store_true", help="检查配置并 ping 一次模型（可配合 -m）")
+    parser.add_argument("-c", "--continue", dest="continue_", action="store_true",
+                        help="继续当前项目最近的一个会话（恢复完整上下文）")
+    parser.add_argument("-r", "--resume", nargs="?", const=True, default=None, metavar="序号|会话id",
+                        help="选一个历史会话继续聊；不带参数时列出来选")
     parser.add_argument("--version", action="version", version=f"mole-agent {__version__}")
     args = parser.parse_args()
     # Windows 上输出被重定向（管道、文件）时默认是 GBK 编码，遇到它编不了的字符会直接崩；改成替换掉

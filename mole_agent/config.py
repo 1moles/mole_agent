@@ -138,6 +138,7 @@ class Settings:
     enable_web: bool = False
     enable_context_rails: bool = True
     enable_subagents: bool = True
+    save_history: bool = True         # 会话历史写入 ~/.mole-agent/sessions/，/history 查看
     audit_log: bool = True
     verbose: bool = False
 
@@ -253,6 +254,7 @@ def load_settings(
         enable_web=_get_bool("ENABLE_WEB", False),
         enable_context_rails=_get_bool("ENABLE_CONTEXT_RAILS", True),
         enable_subagents=_get_bool("ENABLE_SUBAGENTS", True),
+        save_history=_get_bool("SAVE_HISTORY", True),
         audit_log=_get_bool("AUDIT_LOG", True),
         verbose=verbose,
     )

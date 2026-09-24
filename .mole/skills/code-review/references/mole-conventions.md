@@ -81,6 +81,10 @@
 - 鉴权方式走 `ProviderConfig.auth`（`api_key` / `headers` / `none`）→ `build_model` 里的 `auth_mode`；
   不要为某个厂商在别处硬编码请求头或绕过 `init_model` 的等价参数（`max_retries` 等要与 `init_model` 保持一致）。
 - 审计日志（`audit.jsonl`）里的工具结果要截断（`result_preview`）。
+- 会话历史写入走 `history.HistoryRecorder`（SDK `SessionStore` 的文件格式，原子写入）；写入失败只能吞掉，不能打断对话。
+  工具调用只记一行摘要，不记完整输出。
+- 续聊靠 SDK 的 `PersistenceCheckpointer`，由 `history.ContextCheckpoint` 打开和关闭。**阻塞**：打开了检查点却没在退出时
+  `close()`（数据库引擎不释放，进程退不出去），或者没把 SDK 原来的默认检查点换回来。
 
 ## 终端输出（`cli.py`）
 

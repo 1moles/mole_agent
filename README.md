@@ -33,6 +33,7 @@ cd ~/code/your-project && mole
 ```
 
 常用参数：`-m 供应商/模型`（指定模型）、`-p "解释一下这个仓库"`（单次执行）、`--project DIR`、
+`-c`（继续当前项目最近的会话）、`-r [序号]`（选一个历史会话继续）、
 `-y`（全部自动执行，慎用）、`-v`（显示思考过程）、`--list-models`。
 
 ### Windows
@@ -82,7 +83,46 @@ cd D:\code\your-project; mole
 
 REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
 （默认未提交改动，也可以 `/review 提交 a1b2c3d`、`/review 和 main 比`），
-`/new` 新会话，`/usage` token 用量，`/help`，`/exit`；`Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
+`/new` 新会话，`/history [序号]` 查看历史会话，`/resume [序号]` 回到历史会话继续聊，`/usage` token 用量，`/help`，`/exit`；
+`Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
+
+### 会话历史与续聊
+
+每次对话都按 openjiuwen 自带的 `SessionStore`（`openjiuwen.harness.cli.storage`）格式记下来，一个会话一个 JSON 文件，
+按项目分目录存在 `~/.mole-agent/sessions/<项目名>-<哈希>/`。`/history` 列出当前项目的会话（最近活动的在前，
+标题是第一条输入），输入序号看详情；也可以直接 `/history 2` 或 `/history <会话 id 前缀>`。
+
+```
+历史会话 kernel · 最近活动的在前
+   1. 09-24 09:22   1 轮 · deepseek/deepseek-flash  /review  ← 当前
+   2. 09-24 09:15   3 轮 · deepseek/deepseek-flash  帮我看看 tools 目录下有哪些工具
+输入序号查看详情（回车返回） › 2
+──────────── mole-1a2b3c4d · 09-24 09:15 · deepseek/deepseek-flash · 3 轮 ────────────
+› 09:15 帮我看看 tools 目录下有哪些工具
+  ⎿ glob(mole_agent/tools/*.py) → 成功：mole_agent/tools/git_changes.py
+● tools 目录下有两个工具：git_changes（取代码改动）和 project_overview（仓库概览）。
+```
+
+- 记录的内容：你的输入（斜杠命令记原样，如 `/review`）、回复文本、每次工具调用的一行摘要（成功 / 失败 / 被拦截 / 用户拒绝），
+  以及切换模型、中断、出错。子 agent 内部的工具调用不记，只记它交回的结果。
+- `MOLE_SAVE_HISTORY=false` 关闭记录（续聊也一起关掉）。历史和检查点里都有对话原文，别把 `~/.mole-agent/` 发给别人。
+
+**继续聊**：看完详情按 `r`，或者 `/resume [序号]`，就回到那个会话，agent 记得之前的全部上下文
+（包括工具调用和结果，不只是历史里的摘要）。启动时 `mole -c` 直接继续当前项目最近的会话，`mole -r` 先列出来选。
+
+```
+› /resume 2
+✓ 已回到会话 mole-1a2b3c4d · 3 轮 · 对话上下文已恢复
+  上次问：帮我看看 tools 目录下有哪些工具
+  上次答：tools 目录下有两个工具：git_changes（取代码改动）和 project_overview（仓库概览）。
+```
+
+- 原理：openjiuwen 默认把 agent 状态（上下文、待确认的操作）放在内存里，重启就没了。Mole 换成 SDK 自带的
+  `PersistenceCheckpointer`，每轮结束存进 SQLite（`~/.mole-agent/checkpoints.db`）；用原来的会话 id 再跑，SDK 自动恢复。
+  需要 `aiosqlite`（已写进依赖，升级后重新执行一次 `pip install -e ".[dev]"`）；缺了会提示，其他功能照常。
+- 用的是当前选中的模型，不会切回原会话的模型；「总是允许」不跟着历史会话走，回到旧会话后会重新询问。
+- 上次如果停在等你确认的操作上（比如在确认提示处按了 Ctrl+C），继续后会先重新问你那一步。
+- 开启续聊之前的会话只有历史记录、没有检查点，只能查看，不能继续。
 
 ## 选择供应商和模型
 
@@ -296,7 +336,9 @@ rails 用 `env.read_only_rails(名字)`，工具用 `env.tools()`，模型用 `e
 | `~/.mole-agent/workspace/` | agent 私有工作区（记忆、todo 等），与项目目录隔离；子 agent 的在 `sub_agents/<名字>/` |
 | `~/.mole-agent/logs/` | SDK 日志（不输出到终端，也不写进项目目录） |
 | `~/.mole-agent/audit.jsonl` | 工具调用审计 |
-| `~/.mole-agent/history` | REPL 输入历史 |
+| `~/.mole-agent/history` | REPL 输入历史（上下键翻的那个） |
+| `~/.mole-agent/sessions/` | 会话历史（`/history`），每个项目一个子目录，每个会话一个 JSON |
+| `~/.mole-agent/checkpoints.db` | 续聊用的对话上下文（SDK 的 SQLite 检查点），`/resume`、`mole -c` 从这里恢复 |
 
 ## 测试
 
@@ -307,6 +349,10 @@ pytest -q        # 不联网、不需要 API key
 - `tests/test_offline.py`：自定义工具的行为、命令拒绝规则、提示词、配置、MCP 解析、agent 组装
 - `tests/test_tools.py`：tools/ 目录约定——自动发现、文件名即工具名、模板可用、写错时的报错
 - `tests/test_models.py`：models.toml 解析、模型选择规则、启动优先级、供应商级参数覆盖
+- `tests/test_history.py`：会话历史——SDK 的文件格式、按项目分目录、列表排序和标题、损坏文件跳过、
+  `/history` 列表 / 序号 / id 前缀看详情，斜杠命令、切换模型、出错、中断都会记下（假模型端到端）
+- `tests/test_resume.py`：续聊——两次「重启」之间恢复完整上下文、`mole -c` 选最近的会话、新会话不带旧上下文、
+  待确认的操作续聊后重新询问、没有检查点的旧会话被拒绝、「总是允许」不跟随、缺 aiosqlite 时降级
 - `tests/test_netcheck.py`：连接诊断——异常链、openjiuwen 与 httpx 的代理选择差异、NO_PROXY 写法、
   DNS / TCP / 代理 CONNECT / 证书 / 加密套件各步骤（本机临时服务，不联网）
 - `tests/test_stream_only.py`：起一个拒绝非流式请求的假网关，确认 `stream_only` 下 `--check`、带解析器的调用、
