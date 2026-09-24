@@ -83,6 +83,50 @@ cd D:\code\your-project; mole
   测试里的软链接用例在不能建软链接时自动跳过。
 - 老式 cmd 窗口里中文和颜色可能显示不正常，用 Windows Terminal 即可。
 
+### Windows 便携版（不需要装 Python）
+
+给没有 Python 环境的人用：打成一个自带 Python 的 zip，解压后在 PowerShell 里直接运行 `mole`。
+
+**打包**，两种方式任选：
+
+- GitHub Actions：仓库页面 → Actions →「Windows 便携包」→ Run workflow，跑完在这次运行的 Artifacts 里下载
+  `mole-windows-x64-<版本>.zip`。推送 `v0.4.1` 这样的 tag 时会自动打包，并把 zip 附到对应的 Release 上。
+- 在任意一台能上网的 Windows 10/11 上打包，打包机也不需要装 Python：
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
+  ```
+
+  产物是 `dist\mole-windows-x64\` 目录和 `dist\mole-windows-x64-<版本>.zip`。可选参数：
+  `-IndexUrl <PyPI 镜像>`（公司网络访问不了 PyPI 时）、`-PythonPackage <文件>`（访问不了 nuget.org 时，
+  先手动下载 Python 的 nuget 包）、`-PythonVersion`（默认 3.13.7）、`-OpenjiuwenVersion`（默认测试过的 0.1.18.post1，
+  传空字符串表示最新版）。
+
+**使用**：解压到有写权限、路径不太长的目录（如 `D:\tools\mole-windows-x64`），在里面执行一次
+`powershell -ExecutionPolicy Bypass -File .\install.ps1`（加入当前用户的 PATH、生成 `.env`，不需要管理员），
+用记事本在 `.env` 里填 key，重新打开 PowerShell 执行 `mole --check`，之后在任意项目目录输入 `mole`。
+升级、卸载和常见问题见包里的 `README-Windows.txt`。
+
+```
+mole-windows-x64\
+├── mole.exe            启动器（mole.cmd 备用，杀毒软件拦 exe 时用）
+├── install.ps1         加入 / 移出 PATH
+├── .env.example        复制为 .env 填 key
+├── models.toml         供应商配置
+├── mole_agent\         Mole 源码
+├── python\             Python 官方构建（nuget.org 的 python 包）+ 装好的依赖
+└── docs\mole-manual.html
+```
+
+- 打包过程：下载 nuget 上的官方 Python（解压即可用、不写注册表）→ 用它的 pip 装 `pyproject.toml` 里的依赖 →
+  复制源码 → 用 Windows 自带的 `csc.exe` 编译启动器 → 冒烟测试（导入、`--version`、`--list-models`）→ 打 zip。
+- `mole.exe` 只做一件事：运行 `python\python.exe -I -X utf8 -m mole_agent 参数…`。`-I` 让 Python 不读用户环境里的
+  `PYTHONPATH` 等变量，也不会用项目目录里的同名模块；`-X utf8` 统一用 UTF-8。
+  Ctrl+C 交给 Mole 处理（打断当前任务），启动器自己不退出。
+- `.env`、`models.toml` 放在 `mole.exe` 同目录即可（它就是便携版的「仓库根目录」），也可以放 `%USERPROFILE%\.mole-agent\`，
+  这样升级时不用再复制。整个目录可以随意挪动。
+- 建议另外装 Git for Windows：agent 执行 `ls`、`grep` 这类命令时会用到 Git Bash。
+
 ### 斜杠命令与补全
 
 REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
@@ -477,6 +521,7 @@ pytest -q        # 不联网、不需要 API key
 - `tests/test_skills.py`：仓库自带技能的格式检查；项目级 / 用户级 / 软链接技能能被加载和读取，沙箱外仍被拦截
 - `tests/test_subagents.py`：只读 shell 放行/拦截用例表、`git_changes` 的提交/分支范围、子 agent 自动发现与只读配置、
   `[subagents]` 选模型，以及主 agent → `task_tool` → `code_reviewer` 的端到端流程（写命令被拒、不弹确认、审计带 agent 名）
+- `tests/test_packaging.py`：Windows 打包脚本——PowerShell 脚本带 UTF-8 BOM、引用的文件都存在、启动器用隔离模式运行、CI 调用打包脚本
 - `tests/test_e2e_fake_llm.py`：用 pip 装好的 openjiuwen SDK + 按剧本回复的假模型，
   跑完整流程（工具调用、确认/拒绝/总是允许、危险命令拦截、文件沙箱、审计日志、多轮上下文、运行中切换模型）
 

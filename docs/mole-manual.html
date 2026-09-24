@@ -222,9 +222,9 @@ footer{margin-top:4rem;padding-top:1rem;border-top:1px solid var(--line);font-si
     <li><b>16</b>个工具（Windows 17）</li>
     <li><b>2</b>个子 agent</li>
     <li><b>11</b>个斜杠命令</li>
-    <li><b>258</b>个测试</li>
+    <li><b>262</b>个测试</li>
   </ul>
-  <p class="basis">依据：仓库 main 分支 <code>baf9aa0</code>，加上尚未提交的 question 工具改动（2026-09-24）。数字和默认值均对照源码核实。</p>
+  <p class="basis">依据：仓库 main 分支 <code>7949fac</code>，加上尚未提交的 Windows 便携包打包脚本（2026-09-24）。数字和默认值均对照源码核实。</p>
 </header>
 
 <section id="overview">
@@ -491,6 +491,8 @@ mole -c                               <span class="cm"># 继续这个项目最�
 <tr><td colspan="3" class="cat">跨平台</td></tr>
 <tr><td>Windows</td><td>bash 按命令自动选 PowerShell、Git Bash 或 cmd，另注册 powershell 工具，两者同受确认和拦截；事件循环不支持信号处理时用 signal 接管 <kbd>Ctrl</kbd>+<kbd>C</kbd>；输出被重定向时遇到编不了的字符自动替换</td><td>自动</td></tr>
 
+<tr><td>Windows 便携版</td><td>自带官方 Python 的 zip，解压即用，使用者不需要装 Python；<code>install.ps1</code> 一键加入 PATH；GitHub Actions 或本机脚本打包</td><td><code>mole.exe</code></td></tr>
+
 <tr><td colspan="3" class="cat">可扩展</td></tr>
 <tr><td>工具、子 agent 自动发现</td><td>一个文件一个，放进目录重启即可；写错时启动直接报出是哪个文件</td><td><code>tools/</code> <code>subagents/</code></td></tr>
 <tr><td>斜杠命令注册表</td><td>菜单、帮助、分发读同一份定义</td><td><code>commands/</code></td></tr>
@@ -545,6 +547,22 @@ cd D:\code\your-project; mole</pre></div>
   <li>技能软链接需要打开「开发者模式」才能创建，否则直接复制技能目录。</li>
   <li>老式 cmd 窗口里中文和颜色可能显示不正常，用 Windows Terminal 即可。</li>
 </ul>
+<h4>Windows 便携版（不需要装 Python）</h4>
+<p>给没有 Python 环境的人用：一个自带 Python 的 zip，解压后在 PowerShell 里直接运行 <code>mole</code>。</p>
+<ul>
+  <li><b>拿到安装包</b>：GitHub 仓库 → Actions →「Windows 便携包」→ Run workflow，跑完在 Artifacts 里下载 <code>mole-windows-x64-&lt;版本&gt;.zip</code>；推送 <code>v*</code> tag 时自动打包并附到 Release。也可以在任意一台能上网的 Windows 上自己打包（打包机也不需要 Python），产物在 <code>dist\</code>。</li>
+  <li><b>安装</b>：解压到有写权限、路径不太长的目录，执行一次 <code>install.ps1</code>：加入当前用户的 PATH、生成 <code>.env</code>、去掉下载标记，不需要管理员。</li>
+  <li><b>配置</b>：<code>.env</code>、<code>models.toml</code> 放在 <code>mole.exe</code> 同目录（便携版的「仓库根目录」），或者 <code>%USERPROFILE%\.mole-agent\</code>。</li>
+</ul>
+<div class="codebox"><span class="label">本机打包</span><pre class="cmd">powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
+<span class="cm"># 可选：-IndexUrl &lt;PyPI 镜像&gt;  -PythonPackage &lt;已下载的 nuget 包&gt;  -PythonVersion 3.13.7  -OpenjiuwenVersion 0.1.18.post1</span></pre></div>
+<div class="codebox"><span class="label">使用者</span><pre class="cmd">cd D:\tools\mole-windows-x64
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+notepad .env                 <span class="cm"># 填 API key</span>
+<span class="cm"># 重新打开 PowerShell</span>
+mole --check
+cd D:\code\your-project; mole</pre></div>
+<p><code>mole.exe</code> 是用 Windows 自带的 csc.exe 编译的小启动器，只做一件事：运行 <code>python\python.exe -I -X utf8 -m mole_agent 参数…</code>。<code>-I</code> 让 Python 不读用户环境里的 PYTHONPATH 等变量，也不会用项目目录里的同名模块；Ctrl+C 交给 Mole 处理，启动器自己不退出。杀毒软件拦 exe 时可以改用同目录的 <code>mole.cmd</code>。</p>
 <p>依赖：openjiuwen、rich、prompt-toolkit、python-dotenv、httpx（/models 查询）、opentelemetry-sdk（补 openjiuwen 0.1.18 的打包缺陷）、aiosqlite（续聊的检查点）。升级 Mole 后重新执行一次 <code>pip install -e ".[dev]"</code>。</p>
 
 <h3 id="config"><span class="num">4.2</span>配置</h3>
@@ -894,7 +912,7 @@ models = ["coder-large"]</pre></div>
 
 <section id="tests">
 <h2><span class="num">06</span>测试</h2>
-<div class="codebox"><pre class="cmd">pytest -q        <span class="cm"># 不联网、不需要 API key；258 个用例</span></pre></div>
+<div class="codebox"><pre class="cmd">pytest -q        <span class="cm"># 不联网、不需要 API key；262 个用例</span></pre></div>
 <p>端到端测试用 pip 装好的 openjiuwen SDK 加一个按剧本回复的假模型（<code>ScriptedModel</code>），跑真实的 agent 流程；网络相关的用例起本机临时服务。</p>
 <div class="table-wrap"><table>
 <thead><tr><th>文件</th><th>用例</th><th>覆盖</th></tr></thead>
@@ -913,6 +931,7 @@ models = ["coder-large"]</pre></div>
 <tr><td><code>test_tools.py</code></td><td class="num">8</td><td>tools/ 目录约定：自动发现、模板可用、写错时的报错</td></tr>
 <tr><td><code>test_stream_only.py</code></td><td class="num">7</td><td>拒绝非流式请求的假网关：<code>--check</code>、解析器、工具调用、上下文压缩都走流式</td></tr>
 <tr><td><code>test_skills.py</code></td><td class="num">5</td><td>技能格式检查、项目级 / 用户级 / 软链接技能、沙箱外仍被拦截</td></tr>
+<tr><td><code>test_packaging.py</code></td><td class="num">4</td><td>Windows 打包脚本：PowerShell 脚本带 UTF-8 BOM、引用的文件都存在、启动器用隔离模式运行、CI 调用打包脚本</td></tr>
 <tr><td><code>test_e2e_fake_llm.py</code></td><td class="num">3</td><td>完整流程：工具调用、确认 / 拒绝 / 总是允许、危险命令拦截、沙箱、审计、多轮上下文、运行中切换模型</td></tr>
 </tbody></table></div>
 <p class="muted">真实模型用 <code>mole --check</code> 验证连通性。</p>
@@ -949,11 +968,13 @@ models = ["coder-large"]</pre></div>
   <li><span class="meta">2026-09-24 · b42bb46</span><br>合入 PR #1：命令系统与历史会话命令整合，斜杠命令架构文档</li>
   <li><span class="meta">2026-09-24 · 701a576</span><br><code>/history</code> 按标题和内容模糊搜索</li>
   <li><span class="meta">2026-09-24 · baf9aa0</span><br>上下文管理：<code>/context</code>、<code>/compact</code>、压缩提示、流式网关压缩、中文超长报错</li>
-  <li class="pending"><span class="meta">未提交</span><br>常驻 question 工具，替换 SDK 的 ask_user</li>
+  <li><span class="meta">2026-09-24 · 5e21b3b</span><br>常驻 question 工具，替换 SDK 的 ask_user</li>
+  <li><span class="meta">2026-09-24 · 7949fac</span><br>架构与使用手册 docs/mole-manual.html</li>
+  <li class="pending"><span class="meta">未提交</span><br>Windows 便携版：自带 Python 的 zip、mole.exe 启动器、install.ps1、GitHub Actions 打包</li>
 </ol>
 </section>
 
-<footer>Mole 架构与使用手册 · 依据 mole-agent 0.4.1（main <code>baf9aa0</code> + 未提交的 question 工具改动）整理 · 2026-09-24</footer>
+<footer>Mole 架构与使用手册 · 依据 mole-agent 0.4.1（main <code>7949fac</code> + 未提交的 Windows 便携包打包脚本）整理 · 2026-09-24</footer>
 </main>
 </div>
 

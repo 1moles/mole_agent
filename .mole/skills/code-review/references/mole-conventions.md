@@ -103,6 +103,9 @@
 - 供应商、模型相关配置走 `models.toml`；`.env` 里旧的 `MOLE_PROVIDER` / `MOLE_API_BASE` /
   `MOLE_API_KEY` / `MOLE_MODEL` 写法必须继续可用。
 - 命令行参数、斜杠命令、`state.json` 格式的变更要兼容旧用法，或在 README 里写明迁移方式。
+- Windows 便携包（`packaging/windows/`）：PowerShell 脚本只用 Windows 自带的 PowerShell 5.1 支持的语法
+  （不用 `??`、三元运算、`&&`），保存为带 BOM 的 UTF-8（否则中文按 GBK 读会乱码）；`launcher.cs` 只用 C# 5
+  （Windows 自带的 csc.exe 只支持到 C# 5）。新增运行时要读的文件（配置样例、文档等）要同步加进 `build.ps1` 的复制步骤。
 
 ## 模型切换
 
