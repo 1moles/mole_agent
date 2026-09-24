@@ -48,13 +48,13 @@ def _git_info(project_dir: Path) -> str:
     try:
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=project_dir, capture_output=True, text=True, timeout=3,
+            cwd=project_dir, capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
         )
         if branch.returncode != 0:
             return "not a git repo"
         dirty = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=project_dir, capture_output=True, text=True, timeout=3,
+            cwd=project_dir, capture_output=True, text=True, timeout=3, encoding="utf-8", errors="replace",
         )
         changed = len([line for line in dirty.stdout.splitlines() if line.strip()])
         return f"branch={branch.stdout.strip()}, uncommitted_files={changed}"

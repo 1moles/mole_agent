@@ -20,6 +20,8 @@
 - 要兼容 PyPI 发布版 0.1.18.x。开发分支才有的接口不能用（例如
   `openjiuwen.core.single_agent.ability_manager.resolve_tool_result_text`）。不确定时查
   `.venv/lib/python3.*/site-packages/openjiuwen/` 里的源码。
+- 模型请求参数不要直接塞进 `ModelRequestConfig`：额外字段会原样进入每个请求。尤其不能加 `stream=True`，
+  非流式调用会报 `'AsyncStream' object has no attribute 'choices'`；只接受流式的网关用 `stream_only`（`StreamOnlyModel`）。
 - SDK 的已知缺陷要在代码里注释原因，例如 `pyproject.toml` 里显式依赖 `opentelemetry-sdk`、
   bash 拒绝规则由 `CommandGuardRail` 执行（SDK 的 `deny_patterns` 只在 `OPENJIUWEN_BASH_STRICT=1` 时生效）。
 
@@ -69,6 +71,9 @@
 
 - **阻塞**：放宽默认安全策略——`restrict_to_project` 默认值、`MOLE_CONFIRM_TOOLS` 默认列表、
   删除或削弱 `DEFAULT_BASH_DENY` 规则。
+- 执行命令的工具有两个：`bash` 和（只在 Windows 上注册的）`powershell`，见 `config.SHELL_TOOLS`。
+  **阻塞**：新的安全 rail 或确认逻辑只处理了 `bash`。命令检查要用 `rails` 里的切分函数，
+  不能自己按空格或 `;` 切（单个 `&`、换行都能拼出第二条命令）。
 - 新增或修改 bash 拒绝规则时，`tests/test_offline.py` 的「应拦截」和「应放行」两张用例表都要补用例
   （防止误拦正常命令，例如 `make -f Makefile`、`rm -rf build/`）。
 - **阻塞**：API key 出现在 `models.toml`、日志、审计日志、异常信息或终端输出里。key 只能来自环境变量 / `.env`。
@@ -76,6 +81,10 @@
 - 鉴权方式走 `ProviderConfig.auth`（`api_key` / `headers` / `none`）→ `build_model` 里的 `auth_mode`；
   不要为某个厂商在别处硬编码请求头或绕过 `init_model` 的等价参数（`max_retries` 等要与 `init_model` 保持一致）。
 - 审计日志（`audit.jsonl`）里的工具结果要截断（`result_preview`）。
+- 会话历史写入走 `history.HistoryRecorder`（SDK `SessionStore` 的文件格式，原子写入）；写入失败只能吞掉，不能打断对话。
+  工具调用只记一行摘要，不记完整输出。
+- 续聊靠 SDK 的 `PersistenceCheckpointer`，由 `history.ContextCheckpoint` 打开和关闭。**阻塞**：打开了检查点却没在退出时
+  `close()`（数据库引擎不释放，进程退不出去），或者没把 SDK 原来的默认检查点换回来。
 
 ## 终端输出（`cli.py`）
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mole-agent"
-version = "0.3.1"
+version = "0.4.0"
 description = "Mole：基于 openJiuwen agent-core（DeepAgent harness）的终端编码助手"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -17,6 +17,8 @@ dependencies = [
     # openjiuwen 0.1.18.x 的打包缺陷：opentelemetry-sdk 只放在 [observability] 可选依赖里，
     # 但 openjiuwen.agent_evolving 会无条件 import 它（上游 develop 分支已改为必选依赖）
     "opentelemetry-sdk>=1.25.0",
+    # 续聊（/resume、mole -c）：SDK 的 SQLite 检查点要用；版本与 openjiuwen[sqlite] 的要求一致
+    "aiosqlite>=0.22.1",
 ]
 
 [project.optional-dependencies]

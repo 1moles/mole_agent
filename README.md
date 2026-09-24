@@ -33,11 +33,96 @@ cd ~/code/your-project && mole
 ```
 
 常用参数：`-m 供应商/模型`（指定模型）、`-p "解释一下这个仓库"`（单次执行）、`--project DIR`、
+`-c`（继续当前项目最近的会话）、`-r [序号]`（选一个历史会话继续）、
 `-y`（全部自动执行，慎用）、`-v`（显示思考过程）、`--list-models`。
+
+### Windows
+
+在 PowerShell 里执行（推荐用 Windows Terminal）：
+
+```powershell
+# 1. Python 3.13 和 Git。Git for Windows 自带 Git Bash，agent 执行 ls、grep 这类命令时会用到
+winget install -e --id Python.Python.3.13
+winget install -e --id Git.Git
+# 装完重新打开终端
+
+# 2. 取代码、建虚拟环境（py 启动器能准确选中 3.13，避开 Microsoft Store 的 python 占位程序）
+git clone https://github.com/1moles/mole_agent.git kernel
+cd kernel
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1      # 报「禁止运行脚本」时先执行：Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+python -m pip install -U pip
+pip install -U openjiuwen
+pip install -e ".[dev]"
+
+# 3. 配置（models.toml 已在仓库里）
+Copy-Item .env.example .env
+notepad .env
+
+# 4. 运行
+$env:PYTHONUTF8 = "1"; setx PYTHONUTF8 1   # 建议：Python 统一按 UTF-8 读写（当前和以后的终端）
+pytest -q
+mole --check
+cd D:\code\your-project; mole
+```
+
+用 uv 也可以：`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` 装好 uv 后，
+`uv venv --python 3.13 .venv`，激活，再 `uv pip install -U openjiuwen` 和 `uv pip install -e ".[dev]"`。
+
+和 macOS / Linux 的差异：
+
+- 配置目录 `~/.mole-agent/` 在 Windows 上是 `C:\Users\<用户名>\.mole-agent\`。
+- 执行命令：openjiuwen 的 `bash` 工具在 Windows 上按命令自动选 shell——PowerShell 语法交给 PowerShell，
+  `ls` / `grep` 这类交给 Git Bash，其余交给 cmd；另外还会多注册一个 `powershell` 工具。
+  两者都要你确认（`MOLE_CONFIRM_TOOLS` 里 `bash` 和 `powershell` 算一组），也都受拦截规则约束
+  （包括 `Remove-Item` 删整个盘、`Format-Volume`、`iwr … | iex` 等）；子 agent 不能用 `powershell`。
+- `Ctrl+C` 只打断当前任务，不会退出程序。
+- 技能软链接需要打开「开发者模式」（设置 → 系统 → 开发者选项）才能创建，否则直接复制技能目录；
+  测试里的软链接用例在不能建软链接时自动跳过。
+- 老式 cmd 窗口里中文和颜色可能显示不正常，用 Windows Terminal 即可。
 
 REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
 （默认未提交改动，也可以 `/review 提交 a1b2c3d`、`/review 和 main 比`），
-`/new` 新会话，`/usage` token 用量，`/help`，`/exit`；`Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
+`/new` 新会话，`/history [序号]` 查看历史会话，`/resume [序号]` 回到历史会话继续聊，`/usage` token 用量，`/help`，`/exit`；
+`Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
+
+### 会话历史与续聊
+
+每次对话都按 openjiuwen 自带的 `SessionStore`（`openjiuwen.harness.cli.storage`）格式记下来，一个会话一个 JSON 文件，
+按项目分目录存在 `~/.mole-agent/sessions/<项目名>-<哈希>/`。`/history` 列出当前项目的会话（最近活动的在前，
+标题是第一条输入），输入序号看详情；也可以直接 `/history 2` 或 `/history <会话 id 前缀>`。
+
+```
+历史会话 kernel · 最近活动的在前
+   1. 09-24 09:22   1 轮 · deepseek/deepseek-flash  /review  ← 当前
+   2. 09-24 09:15   3 轮 · deepseek/deepseek-flash  帮我看看 tools 目录下有哪些工具
+输入序号查看详情（回车返回） › 2
+──────────── mole-1a2b3c4d · 09-24 09:15 · deepseek/deepseek-flash · 3 轮 ────────────
+› 09:15 帮我看看 tools 目录下有哪些工具
+  ⎿ glob(mole_agent/tools/*.py) → 成功：mole_agent/tools/git_changes.py
+● tools 目录下有两个工具：git_changes（取代码改动）和 project_overview（仓库概览）。
+```
+
+- 记录的内容：你的输入（斜杠命令记原样，如 `/review`）、回复文本、每次工具调用的一行摘要（成功 / 失败 / 被拦截 / 用户拒绝），
+  以及切换模型、中断、出错。子 agent 内部的工具调用不记，只记它交回的结果。
+- `MOLE_SAVE_HISTORY=false` 关闭记录（续聊也一起关掉）。历史和检查点里都有对话原文，别把 `~/.mole-agent/` 发给别人。
+
+**继续聊**：看完详情按 `r`，或者 `/resume [序号]`，就回到那个会话，agent 记得之前的全部上下文
+（包括工具调用和结果，不只是历史里的摘要）。启动时 `mole -c` 直接继续当前项目最近的会话，`mole -r` 先列出来选。
+
+```
+› /resume 2
+✓ 已回到会话 mole-1a2b3c4d · 3 轮 · 对话上下文已恢复
+  上次问：帮我看看 tools 目录下有哪些工具
+  上次答：tools 目录下有两个工具：git_changes（取代码改动）和 project_overview（仓库概览）。
+```
+
+- 原理：openjiuwen 默认把 agent 状态（上下文、待确认的操作）放在内存里，重启就没了。Mole 换成 SDK 自带的
+  `PersistenceCheckpointer`，每轮结束存进 SQLite（`~/.mole-agent/checkpoints.db`）；用原来的会话 id 再跑，SDK 自动恢复。
+  需要 `aiosqlite`（已写进依赖，升级后重新执行一次 `pip install -e ".[dev]"`）；缺了会提示，其他功能照常。
+- 用的是当前选中的模型，不会切回原会话的模型；「总是允许」不跟着历史会话走，回到旧会话后会重新询问。
+- 上次如果停在等你确认的操作上（比如在确认提示处按了 Ctrl+C），继续后会先重新问你那一步。
+- 开启续聊之前的会话只有历史记录、没有检查点，只能查看，不能继续。
 
 输入 `/` 自动展开命令菜单，继续输入可过滤候选；↑↓ 选择、Tab 补全，选中候选后 Enter 确认，再次 Enter 提交。Esc 关闭菜单并保留输入。`/model ` 和 `/models ` 支持本地配置候选补全。
 
@@ -85,6 +170,11 @@ models = ["<部署的模型名>"]
 - `mole --check` 会显示用的是哪种鉴权、带了哪些请求头（只显示名字，不显示取值）。
 - `/models` 在线查询用同样的请求头。
 
+**只接受流式请求的模型**（要求请求里 `stream=true`）：在供应商下加 `stream_only = true`。agent 对话本来就是流式的，
+打开后 SDK 里其余的非流式调用（任务完成判断、上下文压缩、`mole --check` 等）也改为流式请求、在本地拼成完整回复。
+不要自己往 `ModelRequestConfig` 里加 `stream=True`：它会被原样塞进非流式调用的请求参数，
+报 `'AsyncStream' object has no attribute 'choices'`。
+
 三种写法指定模型，`-m` 和 `/model` 通用：
 
 | 写法 | 含义 |
@@ -131,7 +221,7 @@ models = ["<部署的模型名>"]
 ```
 模型发起 tool_call
   → CommandGuardRail (95)  bash 命中拒绝规则 → 直接驳回，模型收到原因
-  → ApprovalRail     (90)  write_file / edit_file / bash → 中断，等你 y / a / n
+  → ApprovalRail     (90)  write_file / edit_file / bash / powershell → 中断，等你 y / a / n
   → ToolTraceRail    (5)   输出 ● tool(args) 到终端
   → 执行工具（文件工具受沙箱限制：只能访问项目目录、~/.mole-agent/workspace 和技能目录）
   → ToolTraceRail          输出 ⎿ 结果摘要，写审计日志 ~/.mole-agent/audit.jsonl
@@ -155,9 +245,9 @@ models = ["<部署的模型名>"]
 | 层 | 机制 | 配置 |
 |---|---|---|
 | 文件沙箱 | 文件工具和命令里引用的路径只能落在项目目录、agent 工作区和技能目录 | `MOLE_RESTRICT_TO_PROJECT` |
-| 命令黑名单 | `CommandGuardRail`：sudo、rm -rf /、强推、reset --hard、curl\|sh 等直接驳回 | `config.DEFAULT_BASH_DENY` + `MOLE_EXTRA_BASH_DENY` |
-| 人工确认 | `ApprovalRail`：写文件、改文件、执行命令前询问；`a` = 本会话总是允许 | `MOLE_CONFIRM_TOOLS`，`-y` 关闭 |
-| 子 agent 只读 | 没有写文件工具；bash 只放行 `ls` / `cat` / `grep` / `git diff` 等只读命令（`ReadOnlyShellRail`）；不挂人工确认 | `rails.read_only_violation` |
+| 命令黑名单 | `CommandGuardRail`：sudo、rm -rf /、强推、reset --hard、curl\|sh，以及 Windows 上删整个盘、格式化、iwr\|iex 等直接驳回；命令按 `\|` `&&` `;` 单个 `&` 和换行切开逐段检查 | `config.DEFAULT_BASH_DENY` + `MOLE_EXTRA_BASH_DENY` |
+| 人工确认 | `ApprovalRail`：写文件、改文件、执行命令（bash / powershell）前询问；`a` = 本会话总是允许 | `MOLE_CONFIRM_TOOLS`，`-y` 关闭 |
+| 子 agent 只读 | 没有写文件工具；bash 只放行 `ls` / `cat` / `grep` / `git diff` 等只读命令，powershell 一律拒绝（`ReadOnlyShellRail`）；不挂人工确认 | `rails.read_only_violation` |
 | 审计 | 每次工具调用一行 JSONL（`agent` 字段区分主 agent 和各子 agent） | `MOLE_AUDIT_LOG` |
 
 > 注意：SDK 的 `BashTool` 自带 `deny_patterns`，但只在环境变量 `OPENJIUWEN_BASH_STRICT=1` 时生效，
@@ -224,6 +314,22 @@ rails 用 `env.read_only_rails(名字)`，工具用 `env.tools()`，模型用 `e
 `agent_card.description` 要写清「什么时候派给它、task_description 写什么」，主 agent 靠它决定何时派活。
 `MOLE_ENABLE_SUBAGENTS=false` 可以整体关掉。
 
+## 连不上模型怎么查
+
+`mole --check` 调用失败时会打出异常链（最后一行是根因），连接类错误还会按 openjiuwen 的实际行为逐步检查：
+走不走代理、NO_PROXY 是否生效、DNS、TCP、代理 CONNECT、TLS 握手。把这段输出发给维护者即可。常见原因：
+
+| 现象（诊断里的 ✗） | 原因与处理 |
+|---|---|
+| 会走代理 / 连接代理失败 / 代理 CONNECT 403、502 | 终端里设了 `http_proxy` 等代理变量，内网地址也被发给了代理。把域名加进 `NO_PROXY`，**要带前导点**：`.inner.example.com` |
+| NO_PROXY 写法 | openjiuwen 的 NO_PROXY 规则比 curl 严：`example.com` 不包含子域名，`*.example.com` 不支持，要写成 `.example.com`；它还会优先用 `http_proxy`（即使地址是 https）|
+| DNS 解析失败 / TCP 连接超时 | 不在内网、没连 VPN，或所在网络区域到不了这个地址 |
+| 证书校验失败 | 服务用公司内部 CA 的证书而本机 Python 不信任它；python.org 安装包装的 Python 要先运行「Install Certificates.command」。可把内部根证书加入信任库，或在该供应商下临时写 `verify_ssl = false` |
+| TLS 协商失败 | openjiuwen 只允许 TLS1.2+，TLS1.2 下只允许 ECDHE + AES-GCM 套件；诊断会对比 Python 默认配置能否握手 |
+
+另外先看 `--check` 前几行：「模型」和「配置」说明实际用的是哪个供应商、哪份 `models.toml`。
+`~/.mole-agent/models.toml` 优先于仓库里的，`~/.mole-agent/state.json` 会记住上次 `/model` 选的模型。
+
 ## 文件位置
 
 | 路径 | 内容 |
@@ -234,7 +340,9 @@ rails 用 `env.read_only_rails(名字)`，工具用 `env.tools()`，模型用 `e
 | `~/.mole-agent/workspace/` | agent 私有工作区（记忆、todo 等），与项目目录隔离；子 agent 的在 `sub_agents/<名字>/` |
 | `~/.mole-agent/logs/` | SDK 日志（不输出到终端，也不写进项目目录） |
 | `~/.mole-agent/audit.jsonl` | 工具调用审计 |
-| `~/.mole-agent/history` | REPL 输入历史 |
+| `~/.mole-agent/history` | REPL 输入历史（上下键翻的那个） |
+| `~/.mole-agent/sessions/` | 会话历史（`/history`），每个项目一个子目录，每个会话一个 JSON |
+| `~/.mole-agent/checkpoints.db` | 续聊用的对话上下文（SDK 的 SQLite 检查点），`/resume`、`mole -c` 从这里恢复 |
 
 ## 测试
 
@@ -245,6 +353,16 @@ pytest -q        # 不联网、不需要 API key
 - `tests/test_offline.py`：自定义工具的行为、命令拒绝规则、提示词、配置、MCP 解析、agent 组装
 - `tests/test_tools.py`：tools/ 目录约定——自动发现、文件名即工具名、模板可用、写错时的报错
 - `tests/test_models.py`：models.toml 解析、模型选择规则、启动优先级、供应商级参数覆盖
+- `tests/test_history.py`：会话历史——SDK 的文件格式、按项目分目录、列表排序和标题、损坏文件跳过、
+  `/history` 列表 / 序号 / id 前缀看详情，斜杠命令、切换模型、出错、中断都会记下（假模型端到端）
+- `tests/test_resume.py`：续聊——两次「重启」之间恢复完整上下文、`mole -c` 选最近的会话、新会话不带旧上下文、
+  待确认的操作续聊后重新询问、没有检查点的旧会话被拒绝、「总是允许」不跟随、缺 aiosqlite 时降级
+- `tests/test_netcheck.py`：连接诊断——异常链、openjiuwen 与 httpx 的代理选择差异、NO_PROXY 写法、
+  DNS / TCP / 代理 CONNECT / 证书 / 加密套件各步骤（本机临时服务，不联网）
+- `tests/test_stream_only.py`：起一个拒绝非流式请求的假网关，确认 `stream_only` 下 `--check`、带解析器的调用、
+  工具调用都能通过流式拼接得到完整结果
+- `tests/test_windows.py`：powershell 同样受确认 / 拦截 / 只读守卫约束，Windows 危险命令用例表，
+  `&` 和换行不能绕过命令检查，事件循环不支持信号处理时 Ctrl+C 只打断当前任务
 - `tests/test_header_auth.py`：请求头鉴权的解析与校验；起一个本地假服务，确认对话、流式、`--check`、`/models`
   发出的请求都带上了配置的请求头且没有 `Authorization`
 - `tests/test_skills.py`：仓库自带技能的格式检查；项目级 / 用户级 / 软链接技能能被加载和读取，沙箱外仍被拦截

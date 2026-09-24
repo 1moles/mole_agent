@@ -133,24 +133,40 @@ class StreamRenderer:
     verbose: bool = False
     pending: list[Pending] = field(default_factory=list)
     text_parts: list[str] = field(default_factory=list)
+    # 按出现顺序记下回复文本和工具结果，写进会话历史：("assistant", 文本) / ("tool", payload)
+    transcript: list[tuple[str, Any]] = field(default_factory=list)
+    _segment: list[str] = field(default_factory=list)
     _in_text: bool = False
     _saw_llm_output: bool = False
 
+    def _flush_segment(self) -> None:
+        if self._segment:
+            self.transcript.append(("assistant", "".join(self._segment)))
+            self._segment = []
+
     def _end_text(self) -> None:
+        self._flush_segment()
         if self._in_text:
             sys.stdout.write("\n")
             sys.stdout.flush()
             self._in_text = False
 
+    def take_transcript(self) -> list[tuple[str, Any]]:
+        """取走目前为止的记录（中断时也能拿到已输出的部分）。"""
+        self._flush_segment()
+        items, self.transcript = self.transcript, []
+        return items
+
     def _write_text(self, text: str) -> None:
         if not text:
             return
         if not self._in_text:
-            sys.stdout.write("\033[92m● \033[0m" if sys.stdout.isatty() else "● ")
+            console.print("●", style="bright_green", end=" ")  # 交给 rich 上色：旧版 Windows 控制台不认裸 ANSI
             self._in_text = True
         sys.stdout.write(text)
         sys.stdout.flush()
         self.text_parts.append(text)
+        self._segment.append(text)
 
     def feed(self, chunk: Any) -> None:
         ctype = _attr(chunk, "type", "")
@@ -213,6 +229,7 @@ class StreamRenderer:
             console.print(f"  │   ✗ {_short(event.get('text', ''), 140)}", style="red", markup=False)
 
     def _render_tool_result(self, payload: Any) -> None:
+        self.transcript.append(("tool", payload))
         name = _attr(payload, "tool_name", "")
         ok = _attr(payload, "ok", True)
         text = str(_attr(payload, "text", "") or "")
@@ -256,6 +273,18 @@ class Repl:
         self._prompt: Any = None
         self._answer_prompt: Any = None
         self.commands = default_registry()
+        self.history: Any = None  # history.HistoryRecorder；MOLE_SAVE_HISTORY=false 时为 None
+        self.checkpoint: Any = None  # history.ContextCheckpoint，由 _amain 打开；为 None 时不能续聊
+        self.checkpoint_error = "没有开启会话历史（MOLE_SAVE_HISTORY=false）" if not settings.save_history else ""
+        if settings.save_history:
+            try:
+                from mole_agent.history import HistoryRecorder
+
+                self.history = HistoryRecorder(settings)
+                self.history.start(self.session_id, settings.model_spec)
+            except Exception as exc:  # noqa: BLE001 —— 历史记录是辅助功能，失败不影响使用
+                console.print(f"[yellow]⚠ 会话历史不可用：{esc(str(exc))}[/yellow]")
+                self.history = None
 
     # 输入框按需创建：非终端环境（测试、管道）下不需要 prompt_toolkit
     @property
@@ -299,12 +328,26 @@ class Repl:
                     renderer.feed(chunk)
             finally:
                 unsubscribe()
+                self._record(renderer.take_transcript())
             final = renderer.finish() or final
             if not renderer.pending:
                 return final
             query = await self._collect_answers(renderer.pending)
             if query is None:
                 return final
+
+    def _record(self, transcript: list[tuple[str, Any]]) -> None:
+        if self.history is None:
+            return
+        for kind, item in transcript:
+            if kind == "assistant":
+                self.history.assistant(item)
+            else:
+                name = str(_attr(item, "tool_name", ""))
+                self.history.tool(
+                    name, _format_args(name, _attr(item, "tool_args")), bool(_attr(item, "ok", True)),
+                    str(_attr(item, "decision", "")), str(_attr(item, "text", "") or ""),
+                )
 
     async def _ask(self, message: str) -> str:
         return (await self.answer_prompt.prompt_async(message)).strip()
@@ -384,6 +427,8 @@ class Repl:
             if self.bundle.approval:
                 self.bundle.approval.always_allow.clear()
             self.bundle.usage.reset()
+            if self.history is not None:
+                self.history.start(self.session_id, self.settings.model_spec)
             return Message(f"已开启新会话 {self.session_id}")
 
         async def usage(args):
@@ -402,6 +447,14 @@ class Repl:
             await self._cmd_models(args.strip())
             return Message("")
 
+        async def history(args):
+            await self._cmd_history(args.strip())
+            return Message("")
+
+        async def resume(args):
+            await self._cmd_resume(args.strip())
+            return Message("")
+
         async def review(args):
             return AgentPrompt(review_prompt(args.strip(), "code_reviewer" in self.bundle.subagents))
 
@@ -411,7 +464,8 @@ class Repl:
             return [CompletionItem(name) for name in self.settings.catalog.providers]
 
         return CommandContext(
-            {"new": new, "usage": usage, "model": model, "models": models, "review": review},
+            {"new": new, "usage": usage, "model": model, "models": models, "review": review,
+             "history": history, "resume": resume},
             candidates,
         )
 
@@ -456,6 +510,98 @@ class Repl:
 
         switch_model(self.bundle, self.settings, choice)
         save_last_model(self.settings.state_path, choice.spec)
+        if self.history is not None:
+            self.history.system(f"切换模型：{choice.spec}")
+
+    # ---------- 会话历史与续聊 ----------
+    async def _pick_session(self, arg: str, action: str) -> Any:
+        """按序号 / 会话 id 前缀选一个历史会话；不带参数时列出来让用户选。返回 SessionSummary 或 None。"""
+        from mole_agent.history import list_sessions
+
+        items = list_sessions(self.history.dir, limit=HISTORY_LIST_LIMIT)
+        if not items:
+            console.print("[dim]当前项目还没有历史会话[/dim]")
+            return None
+        if not arg:
+            print_history_list(items, self.session_id, self.settings.project_dir.name)
+            arg = await self._ask(f"输入序号{action}（回车返回） › ")
+            if not arg:
+                return None
+        if arg.isdigit():
+            if not 1 <= int(arg) <= len(items):
+                console.print(f"[red]序号超出范围：1-{len(items)}[/red]")
+                return None
+            return items[int(arg) - 1]
+        hits = [s for s in items if s.id.startswith(arg)]  # 也可以直接写会话 id（或能唯一确定它的前缀）
+        if len(hits) != 1:
+            console.print(f"[red]{'找不到' if not hits else '有多个'}以 {esc(arg)} 开头的会话[/red]")
+            return None
+        return hits[0]
+
+    async def _cmd_history(self, arg: str) -> None:
+        if self.history is None:
+            console.print("[dim]没有开启会话历史（MOLE_SAVE_HISTORY=false）[/dim]")
+            return
+        from mole_agent.history import load_session
+
+        target = await self._pick_session(arg, "查看详情")
+        if target is None:
+            return
+        session = load_session(self.history.dir, target.id)
+        if session is None:
+            console.print(f"[red]读取会话 {esc(target.id)} 失败（文件不存在或已损坏）[/red]")
+            return
+        current = session.session_id == self.session_id
+        print_session_detail(session, current=current)
+        if current or self.checkpoint is None or not await self.checkpoint.exists(session.session_id):
+            return
+        if (await self._ask("输入 r 从这里继续聊（回车返回） › ")).lower() in {"r", "resume", "继续"}:
+            await self.resume(session.session_id)
+
+    async def _cmd_resume(self, arg: str) -> None:
+        if self.history is None:
+            console.print("[dim]没有开启会话历史（MOLE_SAVE_HISTORY=false），不能续聊[/dim]")
+            return
+        target = await self._pick_session(arg, "继续聊")
+        if target is not None:
+            await self.resume(target.id)
+
+    async def resume(self, session_id: str) -> bool:
+        """切换到历史会话：之后的对话用它的会话 id，SDK 从检查点里恢复完整上下文。"""
+        from mole_agent.history import load_session
+
+        if session_id == self.session_id:
+            console.print("[dim]已经在这个会话里了[/dim]")
+            return True
+        if self.checkpoint is None:
+            console.print(f"[yellow]续聊不可用：{esc(self.checkpoint_error or '检查点没有打开')}[/yellow]")
+            return False
+        if not await self.checkpoint.exists(session_id):
+            console.print("[yellow]这个会话没有保存对话上下文（多半是开启续聊之前的会话），只能用 /history 查看[/yellow]")
+            return False
+        stored = load_session(self.history.dir, session_id) if self.history is not None else None
+        self.session_id = session_id
+        if self.bundle.approval:
+            self.bundle.approval.always_allow.clear()  # 「总是允许」只对当前这次会话有效，不跟着历史会话走
+        self.bundle.usage.reset()
+        if self.history is not None and stored is not None:
+            self.history.resume(stored)
+            self.history.system(f"继续会话（模型 {self.settings.model_spec}）")
+        print_resume_summary(stored, session_id, self.settings.model_spec)
+        return True
+
+    async def continue_latest(self) -> bool:
+        """mole -c：继续当前项目最近一个能续聊的会话。"""
+        from mole_agent.history import list_sessions
+
+        if self.history is None or self.checkpoint is None:
+            console.print(f"[yellow]续聊不可用：{esc(self.checkpoint_error or '检查点没有打开')}，已开启新会话[/yellow]")
+            return False
+        for item in list_sessions(self.history.dir):
+            if item.id != self.session_id and await self.checkpoint.exists(item.id):
+                return await self.resume(item.id)
+        console.print("[dim]当前项目没有可以继续的会话，已开启新会话[/dim]")
+        return False
 
     async def _cmd_models(self, arg: str) -> None:
         name = arg or self.settings.provider_name
@@ -477,30 +623,31 @@ class Repl:
         console.print(f"[dim]共 {len(ids)} 个。切换：/model {esc(name)}/<模型名>；常用的可加到 models.toml 的 models 列表[/dim]")
 
     # ---------- 带 Ctrl+C 中断的执行 ----------
-    async def run_interruptible(self, text: str) -> None:
+    async def run_interruptible(self, text: str, label: str | None = None) -> None:
+        """label：写进历史的用户输入（斜杠命令展开成长提示词时，记录用户实际敲的命令）。"""
+        if self.history is not None:
+            self.history.user(label or text)
         loop = asyncio.get_running_loop()
         task = asyncio.create_task(self.run_turn(text))
-        installed = False
-        try:
-            loop.add_signal_handler(signal.SIGINT, task.cancel)
-            installed = True
-        except (NotImplementedError, RuntimeError):
-            pass  # Windows：退化为 KeyboardInterrupt
+        restore = _cancel_on_sigint(loop, task)
         try:
             await task
         except asyncio.CancelledError:
             console.print("\n[dim]⏹ 已中断[/dim]")
+            if self.history is not None:
+                self.history.system("已中断")
             try:
                 await self.bundle.agent.abort()
             except Exception:  # noqa: BLE001
                 pass
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]✗ {esc(_friendly_error(exc))}[/red]")
+            if self.history is not None:
+                self.history.system(f"出错：{_friendly_error(exc)}")
             if self.settings.verbose:
                 console.print_exception()
         finally:
-            if installed:
-                loop.remove_signal_handler(signal.SIGINT)
+            restore()
 
     async def loop(self) -> None:
         while True:
@@ -512,6 +659,7 @@ class Repl:
                 break
             if not text:
                 continue
+            typed = text
             if text.startswith("/"):
                 try:
                     text = await self.handle_slash(text)
@@ -519,9 +667,83 @@ class Repl:
                     break
                 if not text:
                     continue
-            await self.run_interruptible(text)
+            await self.run_interruptible(text, label=typed)
             console.print()
         console.print("[dim]再见～[/dim]")
+
+
+HISTORY_LIST_LIMIT = 30
+_ROLE_STYLE = {"user": "bold cyan", "assistant": "", "tool": "dim", "system": "dim yellow"}
+
+
+def print_history_list(items: list[Any], current_id: str, project_name: str) -> None:
+    from mole_agent.history import local_time
+
+    note = f"，只显示最近 {HISTORY_LIST_LIMIT} 个" if len(items) >= HISTORY_LIST_LIMIT else ""
+    console.print(f"[bold]历史会话[/bold] [dim]{esc(project_name)} · 最近活动的在前{note}[/dim]")
+    for i, item in enumerate(items, 1):
+        mark = "  [green]← 当前[/green]" if item.id == current_id else ""
+        console.print(
+            f"  [dim]{i:>2}.[/dim] {esc(local_time(item.updated_at))}  [dim]{item.user_turns:>2} 轮 · "
+            f"{esc(item.model)}[/dim]  {esc(item.title)}{mark}"
+        )
+
+
+def print_session_detail(session: Any, current: bool = False) -> None:
+    from mole_agent.history import local_time
+
+    users = sum(1 for m in session.messages if m.role == "user")
+    title = f"{session.session_id} · {local_time(session.created_at)} · {session.model} · {users} 轮"
+    console.rule(esc(title + ("（当前会话）" if current else "")), style="dim")
+    for message in session.messages:
+        text = message.content.rstrip()
+        if message.role == "user":
+            console.print()
+            console.print(f"› {local_time(message.timestamp, '%H:%M')}", style="dim", end=" ")
+            console.print(text, style=_ROLE_STYLE["user"], markup=False)
+        elif message.role == "assistant":
+            console.print("●", style="bright_green", end=" ")
+            console.print(text, markup=False)
+        elif message.role == "tool":
+            console.print(f"  ⎿ {text}", style=_ROLE_STYLE["tool"], markup=False)
+        else:
+            console.print(f"  · {text}", style=_ROLE_STYLE.get(message.role, "dim"), markup=False)
+    console.rule(style="dim")
+
+
+def print_resume_summary(stored: Any, session_id: str, current_model: str) -> None:
+    """回到历史会话时，把最后一问一答亮出来，提醒聊到哪儿了。"""
+    if stored is None:
+        console.print(f"[green]✓ 已回到会话 {esc(session_id)}[/green][dim]（对话上下文已恢复）[/dim]")
+        return
+    users = [m for m in stored.messages if m.role == "user"]
+    replies = [m for m in stored.messages if m.role == "assistant"]
+    note = f"，原来用的是 {stored.model}，现在用 {current_model}" if stored.model and stored.model != current_model else ""
+    console.print(f"[green]✓ 已回到会话 {esc(session_id)}[/green][dim] · {len(users)} 轮{esc(note)} · 对话上下文已恢复[/dim]")
+    if users:
+        console.print(f"  [dim]上次问：[/dim]{esc(_short(users[-1].content, 120))}")
+    if replies:
+        console.print(f"  [dim]上次答：[/dim]{esc(_short(replies[-1].content, 120))}")
+    console.print("[dim]  如果上次停在等你确认的操作上，接着聊时会先重新问你[/dim]")
+
+
+def _cancel_on_sigint(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> Any:
+    """执行期间 Ctrl+C 只取消当前任务、回到输入框；返回恢复原处理方式的函数。
+
+    macOS / Linux 用事件循环的 add_signal_handler。Windows 的事件循环不支持它，而 asyncio.run
+    默认会在 Ctrl+C 时取消整个程序，所以改用 signal.signal 临时接管，任务结束后再还原。
+    """
+    try:
+        loop.add_signal_handler(signal.SIGINT, task.cancel)
+        return lambda: loop.remove_signal_handler(signal.SIGINT)
+    except (NotImplementedError, RuntimeError):
+        pass
+    try:
+        previous = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(task.cancel))
+    except ValueError:  # 不在主线程（例如被嵌入到别的程序里）：保持默认行为
+        return lambda: None
+    return lambda: signal.signal(signal.SIGINT, previous)
 
 
 def review_prompt(request: str, has_reviewer: bool) -> str:
@@ -612,15 +834,38 @@ def describe_auth(settings: Settings) -> str:
     return "API key（Authorization: Bearer）" + (f"，附加请求头 {names}" if settings.custom_headers else "")
 
 
+async def _explain_failure(settings: Settings, exc: BaseException) -> None:
+    """SDK 的报错只有最外层一句话；这里把异常链打出来，连接类错误再逐步做网络诊断。"""
+    from mole_agent import netcheck
+
+    chain = netcheck.describe_exception_chain(exc)
+    if len(chain) > 1:
+        console.print("[dim]异常链（最后一行是根因）：[/dim]")
+        for line in chain[1:]:
+            console.print(f"  {line}", style="dim", markup=False)
+    if not netcheck.is_connection_error(exc):
+        return
+    console.print("[bold]网络诊断[/bold]（按 openjiuwen 的实际行为逐步检查）")
+    steps = await asyncio.to_thread(netcheck.diagnose, settings.api_base, settings.verify_ssl)
+    for step in steps:
+        style = {True: "green", False: "red", None: "dim"}[step.ok]
+        console.print(f"  {step.render()}", style=style, markup=False)
+
+
 async def _check(settings: Settings) -> int:
     from mole_agent.agent import build_model
 
     console.print(f"模型：{settings.model_spec} @ {settings.api_base} ({settings.provider})", markup=False)
     console.print(f"鉴权：{describe_auth(settings)}", markup=False)
+    if settings.stream_only:
+        console.print("调用：只走流式（stream_only = true，非流式调用在本地拼接）", markup=False)
+    sources = "、".join(str(p) for p in settings.catalog.sources) or "（无 models.toml，用的是 .env 里的 MOLE_*）"
+    console.print(f"配置：{sources}", markup=False)
     try:
         reply = await build_model(settings).invoke([{"role": "user", "content": "只回复两个字：你好"}])
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]✗ 模型调用失败：{esc(_friendly_error(exc))}[/red]")
+        await _explain_failure(settings, exc)
         return 1
     console.print(f"[green]✓ 模型可用[/green]，回复：{esc(_short(getattr(reply, 'content', reply), 80))}")
     return 0
@@ -651,17 +896,32 @@ async def _amain(args: argparse.Namespace) -> int:
     from mole_agent.agent import build_agent
 
     bundle = build_agent(settings)
+    checkpoint = None
+    repl = Repl(settings, bundle)
+    if settings.save_history:
+        from mole_agent.history import open_context_checkpoint
+
+        checkpoint, reason = await open_context_checkpoint(settings)
+        repl.checkpoint, repl.checkpoint_error = checkpoint, reason
+        if checkpoint is None:
+            console.print(f"[yellow]⚠ {esc(reason)}[/yellow]")
     await Runner.start()
     try:
-        repl = Repl(settings, bundle)
+        if not args.prompt:
+            _print_banner(settings, bundle)
+        if args.resume:
+            await repl._cmd_resume("" if args.resume is True else args.resume)
+        elif args.continue_:
+            await repl.continue_latest()
         if args.prompt:
             await repl.run_interruptible(args.prompt)
             return 0
-        _print_banner(settings, bundle)
         await repl.loop()
         return 0
     finally:
         await Runner.stop()
+        if checkpoint is not None:
+            await checkpoint.close()
 
 
 def main() -> None:
@@ -673,8 +933,18 @@ def main() -> None:
     parser.add_argument("-y", "--yes", action="store_true", help="所有工具自动执行，不再询问（慎用）")
     parser.add_argument("-v", "--verbose", action="store_true", help="显示思考过程与 SDK 日志")
     parser.add_argument("--check", action="store_true", help="检查配置并 ping 一次模型（可配合 -m）")
+    parser.add_argument("-c", "--continue", dest="continue_", action="store_true",
+                        help="继续当前项目最近的一个会话（恢复完整上下文）")
+    parser.add_argument("-r", "--resume", nargs="?", const=True, default=None, metavar="序号|会话id",
+                        help="选一个历史会话继续聊；不带参数时列出来选")
     parser.add_argument("--version", action="version", version=f"mole-agent {__version__}")
     args = parser.parse_args()
+    # Windows 上输出被重定向（管道、文件）时默认是 GBK 编码，遇到它编不了的字符会直接崩；改成替换掉
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(asyncio.run(_amain(args)))
     except KeyboardInterrupt:

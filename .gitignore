@@ -8,6 +8,14 @@ build/
 dist/
 .pytest_cache/
 logs/
+node_modules/
+
+# 密钥类文件：只按扩展名 / 固定文件名匹配。不要写 *token* 这种宽泛规则，
+# 会把 test_token_usage.py 之类名字里带 token / password 的源码也忽略掉
+*.secret
+*.token
+token.txt
+*password*.txt
 
 # IDE / 编辑器 / 系统生成的文件，不进仓库
 .idea/

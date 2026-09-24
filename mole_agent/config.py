@@ -30,8 +30,21 @@ def _home_dir() -> Path:
     return Path(os.getenv("MOLE_HOME", Path.home() / ".mole-agent")).expanduser()
 
 
-# 内置 bash 拒绝规则（正则，忽略大小写），由 rails.CommandGuardRail 执行。
-# 命令会先按 | && || ; 切成子命令再逐段 search（整条命令也会查一遍），
+# 执行命令的工具：bash（Windows 上 SDK 会按命令自动选 PowerShell / Git Bash / cmd），
+# 以及只在 Windows 上注册的 powershell。确认、拦截规则对两者一视同仁。
+SHELL_TOOLS = ("bash", "powershell")
+
+
+def with_shell_group(tools: list[str]) -> list[str]:
+    """确认列表里写了 bash 或 powershell 之一，就两个都确认（旧 .env 里只写了 bash 也不会漏掉 powershell）。"""
+    out = list(tools)
+    if any(t in SHELL_TOOLS for t in out):
+        out += [t for t in SHELL_TOOLS if t not in out]
+    return out
+
+
+# 内置命令拒绝规则（正则，忽略大小写），由 rails.CommandGuardRail 对 bash / powershell 执行。
+# 命令会先按 | && || ; 以及单个 &、换行切成子命令再逐段 search，
 # 所以每条规则描述「单个子命令」长什么样即可。
 DEFAULT_BASH_DENY: list[str] = [
     r"\brm\s+(-[a-z]*\s+)*-[a-z]*r[a-z]*\s+(-[a-z]*\s+)*(/\*?|~/?|\$HOME/?)\s*$",  # rm -rf / 或 ~
@@ -44,6 +57,12 @@ DEFAULT_BASH_DENY: list[str] = [
     r"\bgit\s+reset\s+--hard\b",                        # 丢弃本地修改
     r"\bchmod\s+(-R\s+)?777\s+/",                       # 全盘放权
     r":\(\)\s*\{",                                      # fork 炸弹
+    # Windows（PowerShell / cmd）
+    r"^\s*(stop-computer|restart-computer)\b",           # 关机重启
+    r"\b(format-volume|clear-disk|initialize-disk)\b",   # 格式化 / 清盘
+    r"^\s*format\s+[a-z]:",                              # cmd 格式化
+    r"^\s*(iex|invoke-expression)\b",                    # iwr ... | iex 的管道右侧
+    r"\b(remove-item|ri|rm|rmdir|rd|del|erase)\b.*\s['\"]?([a-z]:[\\/]?|~[\\/]?|\$home[\\/]?|\$env:userprofile[\\/]?)\*?['\"]?\s*$",  # 删整个盘 / 用户目录
 ]
 
 
@@ -94,6 +113,7 @@ class Settings:
     verify_ssl: bool = True
     custom_headers: dict[str, str] = field(default_factory=dict)   # 已把 ${VAR} 换成实际值
     auth: str = "api_key"             # api_key / headers / none，见 models.AUTH_MODES
+    stream_only: bool = False         # 所有模型调用都走流式（网关只接受 stream=true）
     provider_name: str = ""           # models.toml 里的供应商名
     catalog: ModelCatalog = field(default_factory=ModelCatalog)
     model_error: str = ""
@@ -110,7 +130,7 @@ class Settings:
     home_dir: Path = field(default_factory=_home_dir)
 
     # 安全
-    confirm_tools: list[str] = field(default_factory=lambda: ["write_file", "edit_file", "bash"])
+    confirm_tools: list[str] = field(default_factory=lambda: ["write_file", "edit_file", "bash", "powershell"])
     restrict_to_project: bool = True
     bash_deny_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_BASH_DENY))
 
@@ -118,10 +138,12 @@ class Settings:
     enable_web: bool = False
     enable_context_rails: bool = True
     enable_subagents: bool = True
+    save_history: bool = True         # 会话历史写入 ~/.mole-agent/sessions/，/history 查看
     audit_log: bool = True
     verbose: bool = False
 
     def __post_init__(self) -> None:
+        self.confirm_tools = with_shell_group(self.confirm_tools)
         if not self.model_defaults:
             self.model_defaults = {
                 "temperature": self.temperature,
@@ -144,6 +166,7 @@ class Settings:
         self.api_key = p.resolved_api_key if p.auth != "none" else ""
         self.custom_headers = p.resolved_headers
         self.auth = p.auth
+        self.stream_only = p.stream_only
         self.temperature = p.temperature if p.temperature is not None else d.get("temperature")
         self.max_tokens = int(p.max_tokens if p.max_tokens is not None else d.get("max_tokens") or 8192)
         self.timeout = float(p.timeout if p.timeout is not None else d.get("timeout") or 120.0)
@@ -225,12 +248,13 @@ def load_settings(
         max_iterations=_get_int("MAX_ITERATIONS", 40),
         project_dir=Path(project_dir or os.getcwd()).expanduser().resolve(),
         home_dir=_home_dir(),
-        confirm_tools=_get_list("CONFIRM_TOOLS", ["write_file", "edit_file", "bash"]),
+        confirm_tools=_get_list("CONFIRM_TOOLS", ["write_file", "edit_file", "bash", "powershell"]),
         restrict_to_project=_get_bool("RESTRICT_TO_PROJECT", True),
         bash_deny_patterns=[*DEFAULT_BASH_DENY, *extra_deny],
         enable_web=_get_bool("ENABLE_WEB", False),
         enable_context_rails=_get_bool("ENABLE_CONTEXT_RAILS", True),
         enable_subagents=_get_bool("ENABLE_SUBAGENTS", True),
+        save_history=_get_bool("SAVE_HISTORY", True),
         audit_log=_get_bool("AUDIT_LOG", True),
         verbose=verbose,
     )

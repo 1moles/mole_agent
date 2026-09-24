@@ -6,6 +6,9 @@
 #     "headers"  不用 API key，靠 headers 里的请求头鉴权（如 ModelArts 在线服务），不发 Authorization
 #     "none"     不鉴权（本地 vLLM、不校验的内部网关）
 # - headers 的值可以写 ${环境变量}，从 .env 取值，token 之类的密钥不要直接写在这里。
+# - stream_only = true：网关只接受流式请求（stream=true）时打开，所有调用都走流式；
+#   不要自己往请求参数里加 stream=true，那样非流式调用（mole --check 等）会报
+#   'AsyncStream' object has no attribute 'choices'。
 # - client_provider 是 openjiuwen 的协议/厂商标识：
 #     OpenAI（任何 OpenAI 兼容接口）、Anthropic，以及 OpenAI 兼容协议上的厂商适配：
 #     DeepSeek、DashScope、Moonshot、Zhipu、SiliconFlow、OpenRouter、ModelArts、VolcEngine、Qianfan、MiniMax
@@ -61,6 +64,7 @@ models = []
 # api_base = "https://<在线服务调用地址>/v1"       # 写到 /v1；写成完整的 …/chat/completions 也可以
 # auth = "headers"
 # headers = { "X-Auth-Token" = "${MODELARTS_TOKEN}" }
+# stream_only = true                               # 服务只支持流式输出时打开
 # models = ["<部署的模型名>"]
 
 [providers.siliconflow]
