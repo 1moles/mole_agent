@@ -12,7 +12,7 @@ INPUT_GUIDANCE = (
 )
 PROJECT_GUIDANCE = (
     "  项目根目录可放置 MOLE.md（也兼容 AGENTS.md / CLAUDE.md），"
-    "写入项目约定，启动时自动加载。\n"
+    "写入项目约定，启动时自动加载；/init 可分析项目生成或更新，并在当前会话加载。\n"
     "  子 Agent（explore_agent / code_reviewer）由主 Agent 按需调用，"
     "终端中以 │ 开头的行是它们的动作。"
 )

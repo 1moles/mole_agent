@@ -176,6 +176,31 @@ def build_model(settings: Settings):
     )
 
 
+def refresh_project_instructions(bundle: AgentBundle, settings: Settings) -> None:
+    """仅更新 identity，保留同一个 builder、其他 sections、工具和会话。"""
+    from openjiuwen.harness.prompts import PromptSection
+    from openjiuwen.harness.prompts.sections import SectionName
+
+    agent = bundle.agent
+    builder = agent.system_prompt_builder
+    if builder is None or not callable(getattr(agent, "apply_prompt_builder_to_react_agent", None)):
+        raise RuntimeError("当前 SDK 不支持在线刷新，请重启 Mole 加载项目规则")
+    prompt = build_system_prompt(settings, subagents=list(bundle.subagents))
+    previous = builder.get_section(SectionName.IDENTITY)
+    builder.add_section(PromptSection(
+        name=SectionName.IDENTITY, content={"cn": prompt, "en": prompt}, priority=10,
+    ))
+    try:
+        agent.apply_prompt_builder_to_react_agent()
+    except Exception:
+        if previous is not None:
+            builder.add_section(previous)
+        else:
+            builder.remove_section(SectionName.IDENTITY)
+        raise
+    agent.deep_config.system_prompt = prompt
+
+
 def switch_model(bundle: "AgentBundle", settings: Settings, choice: ModelChoice) -> None:
     """运行中切换 供应商/模型，保留当前会话上下文。
 

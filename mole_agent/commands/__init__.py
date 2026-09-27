@@ -15,6 +15,7 @@ def default_registry():
 
     registry.register(CommandSpec("help", "显示帮助", help_command))
     definitions = [
+        ("init", "生成或更新项目规则，并在当前会话加载", "[补充要求]", ()),
         ("model", "切换模型，保留对话上下文", "[序号|供应商/模型]", ()),
         ("models", "在线查询供应商模型", "[供应商]", ()),
         ("review", "只读代码检视", "[范围或要求]", ()),

@@ -87,6 +87,47 @@ def _audit(settings: Settings) -> list[dict]:
     return [json.loads(line) for line in settings.audit_log_path.read_text(encoding="utf-8").splitlines()]
 
 
+async def test_init_writes_and_refreshes_without_resetting_session(env):
+    from mole_agent.commands import AgentPrompt
+
+    proj, settings, bundle, fake, repl, answers, asked = env
+    fake.plan(("记住本轮上下文。", []))
+    await repl.run_turn("先讨论一下项目")
+    builder = bundle.agent.system_prompt_builder
+    react = bundle.agent.react_agent
+    session_id = repl.session_id
+    bundle.approval.always_allow.add("bash")
+    command = await repl.handle_slash("/init 重点关注测试")
+    assert isinstance(command, AgentPrompt)
+    draft = next(settings.workspace_dir.glob("init-*")) / "draft.md"
+    rules = "# Rules\n所有测试名称包含 mole_init_marker。\n"
+    fake.plan(("", [("write_file", {"file_path": str(draft), "content": rules})]),
+              ("草稿已完成。", []))
+    answers[:] = ["y"]
+    await repl.run_interruptible(command, label="/init 重点关注测试")
+    assert (proj / "AGENTS.md").read_text() == rules
+    assert repl.session_id == session_id
+    assert bundle.agent.react_agent is react
+    assert bundle.agent.system_prompt_builder is builder
+    assert "bash" in bundle.approval.always_allow
+    assert not list(settings.workspace_dir.glob("init-*"))
+
+    fake.plan(("继续。", []))
+    await repl.run_turn("继续之前的讨论")
+    latest = next(c for c in reversed(fake.calls) if "system" in c)
+    assert "mole_init_marker" in latest["system"]
+    assert latest["n_msgs"] > 3
+    assert latest["tools"]
+    # Repeating /init with identical content must not replace the file.
+    before = (proj / "AGENTS.md").stat().st_mtime_ns
+    command = await repl.handle_slash("/init")
+    draft = next(settings.workspace_dir.glob("init-*")) / "draft.md"
+    fake.plan(("", [("write_file", {"file_path": str(draft), "content": rules})]),
+              ("无需更改。", []))
+    await repl.run_interruptible(command, label="/init")
+    assert (proj / "AGENTS.md").stat().st_mtime_ns == before
+
+
 async def test_full_flow(env):
     proj, settings, bundle, fake, repl, answers, asked = env
 
