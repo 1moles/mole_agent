@@ -83,7 +83,7 @@ cd D:\code\your-project; mole
 
 ### 斜杠命令与补全
 
-REPL 内命令：`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
+REPL 内命令：`/init [补充要求]` 初始化或更新项目规则，`/model` 切换模型，`/models [供应商]` 在线查询可用模型，`/review [范围或要求]` 交给检视子 agent
 （默认未提交改动，也可以 `/review 提交 a1b2c3d`、`/review 和 main 比`），
 `/new` 新会话，`/history [序号]` 查看历史会话，`/resume [序号]` 回到历史会话继续聊，`/usage` token 用量，`/help`，`/exit`；
 `Ctrl+C` 打断当前任务，`Ctrl+D` 退出。
@@ -307,6 +307,13 @@ mole_agent/tools/
 或执行 `/review` 就会按它做代码检视（`SKILL.md` 定流程和输出格式，`references/` 里是本项目约定和细项清单）。
 
 **项目约定**：在项目根目录写 `MOLE.md`（也兼容 `AGENTS.md` / `CLAUDE.md`），启动时注入系统提示词。
+
+也可以执行 `/init`，让 Mole 分析项目后生成规则；例如 `/init 重点补充测试命令和模块边界`。
+按 `MOLE.md → AGENTS.md → CLAUDE.md → OPENJIUWEN.md` 选择第一个可读文件进行更新；没有文件时创建 `AGENTS.md`。
+Agent 先在工作区生成草稿，正常结束后检查内容及原文件是否变化，再原子写回并刷新当前会话，无需重启。
+取消、空草稿或检测到外部修改时不写回；符号链接目标需手工维护。已有有效人工约定应保留，重复执行避免重复追加。
+草稿上限为 20,000 字符，与规则加载预算一致。文件已保存但在线刷新失败时会明确提示，可重启加载。
+`/init` 沿用正常工具审批流程，不自动提交 Git；它是项目文件初始化功能，不依赖长期记忆 SDK。
 
 **加一个子 agent**：和工具一样，一个子 agent 一个文件，启动时自动发现。
 

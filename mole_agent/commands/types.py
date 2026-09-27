@@ -11,6 +11,7 @@ class Message:
 @dataclass(frozen=True)
 class AgentPrompt:
     text: str
+    on_finish: Callable[[bool], Awaitable[Message | None]] | None = None
 
 
 @dataclass(frozen=True)

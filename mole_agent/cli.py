@@ -35,6 +35,12 @@ from mole_agent.commands import (
 
 from mole_agent.commands.help import render_help
 
+
+def refresh_project_instructions(bundle, settings):
+    # Keep SDK imports lazy for help/completion and command-only uses.
+    from mole_agent.agent import refresh_project_instructions as refresh
+    refresh(bundle, settings)
+
 console = Console(highlight=False)
 
 # 有 code_reviewer 子 agent 时交给它：检视读的 diff 和上下文不进主对话
@@ -131,6 +137,7 @@ class Pending:
 @dataclass
 class StreamRenderer:
     verbose: bool = False
+    failed: bool = False
     pending: list[Pending] = field(default_factory=list)
     text_parts: list[str] = field(default_factory=list)
     # 按出现顺序记下回复文本和工具结果，写进会话历史：("assistant", 文本) / ("tool", payload)
@@ -204,9 +211,10 @@ class StreamRenderer:
             if text:
                 console.print(f"[dim]  ⚙ {esc(text)}[/dim]")
         elif ctype == "controller_output":
-            raw = str(payload)
-            if "task_failed" in raw.lower():
-                console.print(f"[red]✗ 任务失败：{esc(_short(raw, 300))}[/red]")
+            event_type = _attr(payload, "type", "")
+            if getattr(event_type, "value", event_type) == "task_failed":
+                self.failed = True
+                console.print(f"[red]✗ 任务失败：{esc(_short(str(payload), 300))}[/red]")
         elif ctype == "__interaction__":
             if isinstance(payload, dict):
                 iid, value = payload.get("interaction_id", "unknown"), payload
@@ -318,6 +326,7 @@ class Repl:
         from openjiuwen.core.runner import Runner
 
         query: Any = text
+        self._turn_completed = False
         final = ""
         while True:
             renderer = StreamRenderer(verbose=self.settings.verbose)
@@ -330,7 +339,10 @@ class Repl:
                 unsubscribe()
                 self._record(renderer.take_transcript())
             final = renderer.finish() or final
+            if renderer.failed:
+                return final
             if not renderer.pending:
+                self._turn_completed = True
                 return final
             query = await self._collect_answers(renderer.pending)
             if query is None:
@@ -458,18 +470,47 @@ class Repl:
         async def review(args):
             return AgentPrompt(review_prompt(args.strip(), "code_reviewer" in self.bundle.subagents))
 
+        async def init(args):
+            from mole_agent.commands.init import InitDraft
+
+            draft = InitDraft(self.settings.project_dir, self.settings.workspace_dir)
+            try:
+                prompt = draft.prompt(args.strip())
+            except Exception:
+                draft.close()
+                raise
+            console.print(f"[dim]/init 目标：{esc(str(draft.target))}（先生成草稿，再检查写回）[/dim]")
+
+            async def finish(completed):
+                try:
+                    if not completed:
+                        return Message("/init 未完成，草稿未写回目标文件。")
+                    status = draft.commit()
+                    label = {"created": "已创建", "updated": "已更新", "unchanged": "内容无需更新"}[status]
+                    try:
+                        refresh_project_instructions(self.bundle, self.settings)
+                    except Exception as exc:
+                        return Message(f"{label}：{draft.target}；当前会话刷新失败：{_short(str(exc), 200)}")
+                    return Message(f"{label}：{draft.target}；已在当前会话加载。")
+                except (OSError, ValueError) as exc:
+                    return Message(f"/init 未完成：{exc}")
+                finally:
+                    draft.close()
+
+            return AgentPrompt(prompt, on_finish=finish)
+
         def candidates(name):
             if name == "model":
                 return [CompletionItem(c.spec) for c in usable_choices(self.settings)]
             return [CompletionItem(name) for name in self.settings.catalog.providers]
 
         return CommandContext(
-            {"new": new, "usage": usage, "model": model, "models": models, "review": review,
+            {"new": new, "usage": usage, "model": model, "models": models, "review": review, "init": init,
              "history": history, "resume": resume},
             candidates,
         )
 
-    async def handle_slash(self, text: str) -> str | None:
+    async def handle_slash(self, text: str) -> str | AgentPrompt | None:
         result = await dispatch(self.commands, self.command_context(), text)
         if isinstance(result, Help):
             console.print(render_help(result))
@@ -477,7 +518,7 @@ class Repl:
         if isinstance(result, Exit):
             raise EOFError
         if isinstance(result, AgentPrompt):
-            return result.text
+            return result if result.on_finish else result.text
         if result.text:
             console.print(result.text, markup=False)
         return None
@@ -623,8 +664,12 @@ class Repl:
         console.print(f"[dim]共 {len(ids)} 个。切换：/model {esc(name)}/<模型名>；常用的可加到 models.toml 的 models 列表[/dim]")
 
     # ---------- 带 Ctrl+C 中断的执行 ----------
-    async def run_interruptible(self, text: str, label: str | None = None) -> None:
+    async def run_interruptible(self, text: str | AgentPrompt, label: str | None = None) -> None:
         """label：写进历史的用户输入（斜杠命令展开成长提示词时，记录用户实际敲的命令）。"""
+        on_finish = text.on_finish if isinstance(text, AgentPrompt) else None
+        text = text.text if isinstance(text, AgentPrompt) else text
+        self._turn_completed = False
+        completed = False
         if self.history is not None:
             self.history.user(label or text)
         loop = asyncio.get_running_loop()
@@ -632,6 +677,7 @@ class Repl:
         restore = _cancel_on_sigint(loop, task)
         try:
             await task
+            completed = self._turn_completed
         except asyncio.CancelledError:
             console.print("\n[dim]⏹ 已中断[/dim]")
             if self.history is not None:
@@ -648,6 +694,15 @@ class Repl:
                 console.print_exception()
         finally:
             restore()
+            if on_finish is not None:
+                try:
+                    result = await on_finish(completed)
+                    if result is not None:
+                        console.print(result.text, markup=False)
+                        if self.history is not None:
+                            self.history.system(result.text)
+                except Exception as exc:
+                    console.print(f"[red]命令收尾失败：{esc(_short(str(exc), 200))}[/red]")
 
     async def loop(self) -> None:
         while True:

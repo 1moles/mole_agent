@@ -13,9 +13,7 @@ from pathlib import Path
 
 from mole_agent.config import Settings
 
-# 按顺序查找第一个存在的项目记忆文件，兼容其他 agent 的约定
-PROJECT_MEMORY_FILES = ("MOLE.md", "AGENTS.md", "CLAUDE.md", "OPENJIUWEN.md")
-PROJECT_MEMORY_MAX_CHARS = 20_000
+from mole_agent.instructions import load_project_memory
 
 _PERSONA_CN = """\
 你是 {name}，一个运行在用户终端里的资深软件工程助手。你通过工具直接读写用户项目里的代码、执行命令，帮用户把工程任务真正做完。
@@ -62,19 +60,6 @@ def _git_info(project_dir: Path) -> str:
         return "unknown"
 
 
-def load_project_memory(project_dir: Path) -> tuple[str, str] | None:
-    """返回 (文件名, 内容)；没有记忆文件时返回 None。"""
-    for name in PROJECT_MEMORY_FILES:
-        path = project_dir / name
-        if path.is_file():
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace").strip()
-            except OSError:
-                continue
-            if len(text) > PROJECT_MEMORY_MAX_CHARS:
-                text = text[:PROJECT_MEMORY_MAX_CHARS] + "\n...(已截断)"
-            return name, text
-    return None
 
 
 _SUBAGENTS_CN = """\
