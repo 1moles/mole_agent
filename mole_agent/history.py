@@ -127,11 +127,11 @@ def _read(path: Path) -> Optional[dict[str, Any]]:
     return data if isinstance(data, dict) and data.get("session_id") else None
 
 
-def list_sessions(directory: Path, limit: Optional[int] = None) -> list[SessionSummary]:
-    """列出目录里的会话，最新的在前。先用 SDK 的 list_sessions 拿到基本信息，再补标题和轮数。"""
+def _scan(directory: Path) -> list[tuple[SessionSummary, list[dict[str, Any]]]]:
+    """读出目录里所有会话：(摘要, 原始消息)，最近活动的在前。先用 SDK 的 list_sessions 拿到基本信息，再补标题和轮数。"""
     if not directory.is_dir():
         return []
-    summaries: list[SessionSummary] = []
+    found: list[tuple[SessionSummary, list[dict[str, Any]]]] = []
     for item in SessionStore(store_dir=directory).list_sessions():
         path = directory / f"{item['id']}.json"
         data = _read(path)
@@ -140,7 +140,7 @@ def list_sessions(directory: Path, limit: Optional[int] = None) -> list[SessionS
         messages = [m for m in data.get("messages", []) if isinstance(m, dict)]
         users = [str(m.get("content", "")) for m in messages if m.get("role") == "user"]
         title = " ".join(users[0].split()) if users else "（无输入）"
-        summaries.append(SessionSummary(
+        found.append((SessionSummary(
             id=str(item["id"]),
             model=str(item.get("model", "")),
             created_at=str(item.get("created_at", "")),
@@ -148,9 +148,63 @@ def list_sessions(directory: Path, limit: Optional[int] = None) -> list[SessionS
             user_turns=len(users),
             title=title if len(title) <= TITLE_CHARS else title[: TITLE_CHARS - 1] + "…",
             path=path,
-        ))
-    summaries.sort(key=lambda s: (s.updated_at, s.created_at), reverse=True)
+        ), messages))
+    found.sort(key=lambda pair: (pair[0].updated_at, pair[0].created_at), reverse=True)
+    return found
+
+
+def list_sessions(directory: Path, limit: Optional[int] = None) -> list[SessionSummary]:
+    """列出目录里的会话，最近活动的在前。"""
+    summaries = [summary for summary, _ in _scan(directory)]
     return summaries[:limit] if limit else summaries
+
+
+@dataclass
+class SearchHit:
+    session: SessionSummary
+    snippet: str   # 第一处命中附近的一小段原文，前面带角色（你 / 回复 / 工具 / 系统）
+
+
+_ROLE_LABEL = {"user": "你", "assistant": "回复", "tool": "工具", "system": "系统"}
+SNIPPET_BEFORE, SNIPPET_AFTER = 20, 40
+
+
+def search_keywords(query: str) -> list[str]:
+    """按空白切成多个关键词；整体加了引号时当成一个词（可以搜带空格的短语，或纯数字）。"""
+    query = query.strip()
+    if len(query) >= 2 and query[0] == query[-1] and query[0] in "\"'":
+        return [query[1:-1].strip()] if query[1:-1].strip() else []
+    if len(query) >= 2 and query[0] in "“「" and query[-1] in "”」":
+        return [query[1:-1].strip()] if query[1:-1].strip() else []
+    return query.split()
+
+
+def _snippet(text: str, keyword: str) -> str:
+    flat = " ".join(text.split())
+    match = re.search(re.escape(keyword), flat, re.IGNORECASE)
+    if match is None:
+        return flat[: SNIPPET_BEFORE + SNIPPET_AFTER]
+    start, end = max(0, match.start() - SNIPPET_BEFORE), min(len(flat), match.end() + SNIPPET_AFTER)
+    return ("…" if start > 0 else "") + flat[start:end] + ("…" if end < len(flat) else "")
+
+
+def search_sessions(directory: Path, query: str) -> list[SearchHit]:
+    """模糊搜索：标题或任意一条消息（你的输入、回复、工具摘要、系统事件）里包含关键词就算命中，
+    不区分大小写；多个关键词要求都出现（可以分散在不同消息里）。结果按最近活动排序。"""
+    keywords = search_keywords(query)
+    if not keywords:
+        return []
+    patterns = [re.compile(re.escape(k), re.IGNORECASE) for k in keywords]
+    hits: list[SearchHit] = []
+    for summary, messages in _scan(directory):
+        texts = [(str(m.get("role", "")), str(m.get("content", ""))) for m in messages]
+        corpus = "\n".join([summary.title, *(content for _, content in texts)])
+        if not all(p.search(corpus) for p in patterns):
+            continue
+        role, where = next(((r, c) for r, c in texts if patterns[0].search(c)), ("", summary.title))
+        label = _ROLE_LABEL.get(role, role)
+        hits.append(SearchHit(summary, (f"{label}：" if label else "") + _snippet(where, keywords[0])))
+    return hits
 
 
 def load_session(directory: Path, session_id: str) -> Optional[StoredSession]:

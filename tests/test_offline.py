@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -41,35 +40,6 @@ def _tool(settings: Settings, name: str):
 
 
 # ---------------------------------------------------------------- tools
-async def test_project_overview(project: Path, tmp_path: Path):
-    out = await _tool(_settings(project, tmp_path), "project_overview").invoke({})
-    assert "Python: 1 files / 2 lines" in out
-    assert "Go: 1 files" in out
-    assert "pyproject.toml" in out
-    assert "JavaScript" not in out  # node_modules 被跳过
-
-
-async def test_project_overview_rejects_escape(project: Path, tmp_path: Path):
-    with pytest.raises(Exception, match="越界"):
-        await _tool(_settings(project, tmp_path), "project_overview").invoke({"path": "../"})
-
-
-async def test_git_changes(project: Path, tmp_path: Path):
-    git = lambda *a: subprocess.run(["git", *a], cwd=project, check=True, capture_output=True)  # noqa: E731
-    git("init", "-q")
-    git("-c", "user.email=a@b.c", "-c", "user.name=t", "add", ".")
-    git("-c", "user.email=a@b.c", "-c", "user.name=t", "commit", "-qm", "init")
-    (project / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
-    out = await _tool(_settings(project, tmp_path), "git_changes").invoke({})
-    assert "M src/app.py" in out
-    assert "+print('changed')" in out
-
-
-async def test_git_changes_not_repo(project: Path, tmp_path: Path):
-    out = await _tool(_settings(project, tmp_path), "git_changes").invoke({})
-    assert "不是 git 仓库" in out
-
-
 def test_tool_cards_have_schema(project: Path, tmp_path: Path):
     for t in build_custom_tools(_settings(project, tmp_path)):
         info = t.card.tool_info()

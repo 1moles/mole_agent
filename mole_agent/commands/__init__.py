@@ -20,9 +20,11 @@ def default_registry():
         ("models", "在线查询供应商模型", "[供应商]", ()),
         ("review", "只读代码检视", "[范围或要求]", ()),
         ("new", "新建会话，重置用量和临时授权", "", ()),
-        ("history", "查看当前项目历史会话", "[序号]", ()),
-        ("resume", "恢复历史会话继续聊；mole -c 继续最近会话", "[序号|会话id]", ()),
+        ("history", "查看当前项目历史会话；带关键词时在标题和内容里模糊搜索", "[序号|关键词]", ()),
+        ("resume", "恢复历史会话继续聊（可按关键词搜）；mole -c 继续最近会话", "[序号|关键词|会话id]", ()),
         ("usage", "查看本会话 Token 用量", "", ()),
+        ("context", "查看上下文占用、窗口大小和自动压缩阈值", "", ()),
+        ("compact", "压缩对话上下文；可以写上压缩时要保留的重点", "[要保留的重点]", ()),
         ("exit", "退出", "", ("quit", "q")),
     ]
     for name, description, usage, aliases in definitions:
@@ -39,10 +41,20 @@ def default_registry():
         registry.register(CommandSpec(
             name, description, handler, f"/{name}" + (f" {usage}" if usage else ""),
             aliases, complete if name in {"model", "models"} else None,
-            examples=(
-                ("/review", "检视当前未提交的改动"),
-                ("/review 提交 a1b2c3d", "检视指定提交"),
-                ("/review 和 main 比", "与指定分支比较"),
-            ) if name == "review" else (),
+            examples={
+                "review": (
+                    ("/review", "检视当前未提交的改动"),
+                    ("/review 提交 a1b2c3d", "检视指定提交"),
+                    ("/review 和 main 比", "与指定分支比较"),
+                ),
+                "compact": (
+                    ("/compact", "把较早的对话压成摘要，最近几条消息原样保留"),
+                    ("/compact 保留登录模块的改动和没做完的待办", "告诉压缩模型哪些内容要保留"),
+                ),
+                "history": (
+                    ("/history 你好", "搜索标题或内容里带「你好」的会话（不区分大小写，不要求开头匹配）"),
+                    ('/history "8080"', "纯数字会被当成序号，加引号才按关键词搜"),
+                ),
+            }.get(name, ()),
         ))
     return registry

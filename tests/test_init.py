@@ -219,20 +219,23 @@ async def test_failed_stream_does_not_commit_draft(tmp_path, monkeypatch):
 
     settings = Settings(project_dir=tmp_path, home_dir=tmp_path / 'home', save_history=False)
     activity = SimpleNamespace(subscribe=lambda handler: lambda: None)
-    repl = cli.Repl(settings, SimpleNamespace(subagents={}, agent=object(), activity=activity))
+    repl = cli.Repl(settings, SimpleNamespace(subagents={}, agent=object(), activity=activity, compression=None))
     target = tmp_path / 'AGENTS.md'
     target.write_text('original')
     command = await repl.handle_slash('/init')
     (next(settings.workspace_dir.glob('init-*')) / 'draft.md').write_text('partial draft')
     refreshed = []
     monkeypatch.setattr(cli, 'refresh_project_instructions', lambda *args: refreshed.append(True))
+    streamed = []
 
     async def failed_stream(*args, **kwargs):
+        streamed.append(True)
         yield {'type': 'controller_output', 'payload': {'type': 'task_failed', 'error': 'model failed'}}
         yield {'type': 'answer', 'payload': {'output': '', 'result_type': ''}}
 
     monkeypatch.setattr(Runner, 'run_agent_streaming', failed_stream)
     await repl.run_interruptible(command)
+    assert streamed == [True]
     assert target.read_text() == 'original'
     assert not refreshed
     assert not list(settings.workspace_dir.glob('init-*'))

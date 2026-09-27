@@ -206,3 +206,18 @@ async def test_missing_aiosqlite_degrades_gracefully(workdir, monkeypatch, capsy
     repl.checkpoint_error = reason
     assert not await repl.resume("mole-x")
     assert "续聊不可用" in capsys.readouterr().out
+
+
+async def test_resume_by_keyword(workdir):
+    proj, home = workdir
+    async with MoleProcess(proj, home) as first:
+        first.fake.plan(("在看登录模块", []))
+        await first.repl.run_interruptible("帮我看看登录模块")
+        target = first.repl.session_id
+        await first.repl.handle_slash("/new")
+        first.fake.plan(("好", []))
+        await first.repl.run_interruptible("别的事情")
+
+    async with MoleProcess(proj, home, answers=["1"]) as second:
+        await second.repl.handle_slash("/resume 登录")                 # 关键词搜索后选 1
+        assert second.repl.session_id == target

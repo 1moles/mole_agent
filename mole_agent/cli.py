@@ -14,6 +14,7 @@ import asyncio
 import copy
 import json
 import logging
+import re
 import signal
 import sys
 import uuid
@@ -25,7 +26,8 @@ from rich.markup import escape as esc
 from rich.panel import Panel
 
 from mole_agent import __version__
-from mole_agent.config import Settings, load_settings
+from mole_agent.config import AGENT_ID, Settings, load_settings
+from mole_agent.context import OFFLOADERS, failure_hint, fmt_tokens, is_zh_context_overflow
 from mole_agent.models import ModelChoice, ModelSelectionError, list_remote_models, save_last_model
 
 from mole_agent.commands import (
@@ -53,7 +55,8 @@ REVIEW_PROMPT = """\
 请对当前仓库未提交的改动做一次代码检视。
 如果技能列表里有代码检视技能（例如 code-review），先用 skill_tool 读取它并严格按技能执行，忽略下面的通用步骤；
 没有的话按以下步骤：
-1. 先调用 git_changes 获取改动；需要上下文时用 read_file / grep 查看相关代码。
+1. 用 bash 执行 git status 和 git diff 获取改动（暂存区用 git diff --staged，某个提交用 git show <提交>，
+   与分支比较用 git diff <分支>...HEAD）；需要上下文时用 read_file / grep 查看相关代码。
 2. 按「正确性 > 安全性 > 兼容性（与存量代码/接口） > 可维护性 > 性能」排序列出问题，
    每条写明 `路径:行号`、问题描述、影响、修改建议。没有问题的维度不用硬凑。
 3. 只做检视，不要修改任何文件。
@@ -78,6 +81,9 @@ def _short(text: Any, limit: int = 100) -> str:
 def _format_args(tool_name: str, args: Any) -> str:
     if tool_name == "task_tool" and isinstance(args, dict):
         return _short(f"{args.get('subagent_type', '?')} · {args.get('task_description', '')}", 90)
+    if tool_name == "question" and isinstance(args, dict) and isinstance(args.get("questions"), list):
+        titles = [str(q.get("header") or q.get("question") or "") for q in args["questions"] if isinstance(q, dict)]
+        return _short("、".join(t for t in titles if t), 90)
     if isinstance(args, dict):
         for key in ("command", "file_path", "path", "pattern", "query", "url"):
             if args.get(key):
@@ -134,17 +140,41 @@ class Pending:
     request: Any
 
 
+# 调模型的压缩器：压缩要等一次模型调用，超过这个时间还没结束就先提示「正在压缩…」
+_LLM_COMPRESSORS = frozenset({"DialogueCompressor", "CurrentRoundCompressor", "RoundLevelCompressor",
+                              "SessionMemoryCompressor"})
+COMPRESSING_HINT_DELAY = 1.0
+
+
+@dataclass
+class _CompressionBatch:
+    """连续的一串 context.compression_state 事件（SDK 按处理器逐个尝试），合成终端里的一行。"""
+    phase: str
+    before: int
+    after: int
+    changed: bool = False
+    processors: set[str] = field(default_factory=set)
+    errors: list[str] = field(default_factory=list)
+    shown: bool = False          # 「正在压缩…」已经打出来了（这一行还没换行）
+    timer: Any = None
+
+
 @dataclass
 class StreamRenderer:
     verbose: bool = False
     failed: bool = False
+    compression: Any = None      # context.CompressionWatcher：查压缩失败的原因
     pending: list[Pending] = field(default_factory=list)
     text_parts: list[str] = field(default_factory=list)
     # 按出现顺序记下回复文本和工具结果，写进会话历史：("assistant", 文本) / ("tool", payload)
     transcript: list[tuple[str, Any]] = field(default_factory=list)
+    last_usage: Any = None       # 最近一次 context.usage 事件（每次请求的各部分大小），/context 用
+    compression_notes: list[str] = field(default_factory=list)   # 这轮里的压缩提示，写进会话历史
+    _reported_failures: set[str] = field(default_factory=set)    # 同一个失败原因一轮只提示一次（每次调模型都会重试压缩）
     _segment: list[str] = field(default_factory=list)
     _in_text: bool = False
     _saw_llm_output: bool = False
+    _batch: Any = None
 
     def _flush_segment(self) -> None:
         if self._segment:
@@ -175,9 +205,91 @@ class StreamRenderer:
         self.text_parts.append(text)
         self._segment.append(text)
 
+    # ---------- 上下文压缩：一串事件合成一行 ----------
+    def _feed_compression(self, state: Any) -> None:
+        if not isinstance(state, dict):
+            return
+        status, processor = state.get("status"), str(state.get("processor") or "")
+        before = int((state.get("before") or {}).get("tokens") or 0)
+        after = int((state.get("after") or {}).get("tokens") or before)
+        batch = self._batch
+        if status == "started":
+            self._end_text()
+            if batch is None:
+                batch = self._batch = _CompressionBatch(phase=str(state.get("phase") or ""), before=before, after=before)
+            if processor in _LLM_COMPRESSORS and batch.timer is None and not batch.shown:
+                try:
+                    batch.timer = asyncio.get_running_loop().call_later(COMPRESSING_HINT_DELAY, self._show_compressing)
+                except RuntimeError:
+                    pass
+            return
+        if batch is None:
+            if status not in {"completed", "failed"}:
+                return
+            batch = self._batch = _CompressionBatch(phase=str(state.get("phase") or ""), before=before, after=before)
+        if status == "completed" and after < batch.after:
+            batch.changed, batch.after = True, after
+            batch.processors.add(processor)
+        elif status == "failed" and state.get("error"):
+            batch.errors.append(str(state["error"]))
+        elif status == "noop" and self.compression is not None:
+            reason = self.compression.error_for(str(state.get("operation_id") or ""))
+            if reason:
+                batch.errors.append(reason)
+
+    def _show_compressing(self) -> None:
+        batch = self._batch
+        if batch is None or batch.shown:
+            return
+        batch.shown = True
+        lead = "模型报上下文超长，" if batch.phase == "active_compress" else ""
+        console.print(f"  ⟳ {lead}正在压缩上下文（对话约 {fmt_tokens(batch.before)} tokens）…", style="dim", end="", markup=False, soft_wrap=True)
+
+    def _flush_compression(self) -> None:
+        batch, self._batch = self._batch, None
+        if batch is None:
+            return
+        if batch.timer is not None:
+            batch.timer.cancel()
+        overflow = batch.phase == "active_compress"   # 对话进行中的主动压缩只有一种来源：模型报超长后的恢复
+        saved = 1 - batch.after / batch.before if batch.before else 0
+        detail = f"对话约 {fmt_tokens(batch.before)} → {fmt_tokens(batch.after)} tokens（省 {saved:.0%}）"
+        retry = "，重试中" if overflow else ""
+        if batch.changed:
+            if batch.processors <= OFFLOADERS:
+                note = f"大段工具输出已转存，只留预览：{detail}"
+            else:
+                note = ("模型报上下文超长，已压缩上下文：" if overflow else "上下文已压缩：") + detail + retry
+            if batch.shown:
+                console.print(f" 完成，{detail}{retry}", style="dim", markup=False, soft_wrap=True)
+            else:
+                console.print(f"  ⟳ {note}", style="dim", markup=False, soft_wrap=True)
+            self.compression_notes.append(note)
+        elif batch.errors:
+            reason = batch.errors[-1]
+            hint = failure_hint(reason, getattr(self.compression, "stream_only", False))
+            if batch.shown:
+                console.print(f" 失败：{reason}{hint}", style="yellow", markup=False, soft_wrap=True)
+            elif reason not in self._reported_failures:
+                console.print(f"  ⚠ 上下文压缩失败，上下文保持原样：{reason}{hint}", style="yellow", markup=False, soft_wrap=True)
+            if reason not in self._reported_failures:
+                self.compression_notes.append(f"上下文压缩失败：{reason}")
+            self._reported_failures.add(reason)
+        elif batch.shown:
+            console.print(" 没有可压缩的内容", style="dim", soft_wrap=True)
+
     def feed(self, chunk: Any) -> None:
         ctype = _attr(chunk, "type", "")
         payload = _attr(chunk, "payload")
+
+        if ctype == "context.compression_state":
+            self._feed_compression(payload)
+            return
+        self._flush_compression()
+        if ctype == "context.usage":
+            if isinstance(payload, dict) and payload.get("agent_id") in (None, AGENT_ID):
+                self.last_usage = payload
+            return
 
         if ctype == "llm_output":
             self._saw_llm_output = True
@@ -256,6 +368,10 @@ class StreamRenderer:
         if name == "task_tool" and ok:
             console.print(f"[dim]  ⎿ 子 agent 完成，报告 {len(lines)} 行{suffix}[/dim]")
             return
+        if name == "question" and len(lines) > 2:   # 逐条显示回答（去掉首尾两行固定说明）
+            for line in lines[1:-1]:
+                console.print(f"[dim]  ⎿ {esc(line.lstrip('- '))}[/dim]")
+            return
         if name.startswith("todo_") and lines:
             for line in lines[:12]:
                 console.print(f"[dim]  ⎿ {esc(line)}[/dim]")
@@ -265,6 +381,7 @@ class StreamRenderer:
         console.print(f"[dim]  ⎿ {esc(head)}{more}{suffix}[/dim]")
 
     def finish(self) -> str:
+        self._flush_compression()
         self._end_text()
         return "".join(self.text_parts)
 
@@ -284,6 +401,7 @@ class Repl:
         self.history: Any = None  # history.HistoryRecorder；MOLE_SAVE_HISTORY=false 时为 None
         self.checkpoint: Any = None  # history.ContextCheckpoint，由 _amain 打开；为 None 时不能续聊
         self.checkpoint_error = "没有开启会话历史（MOLE_SAVE_HISTORY=false）" if not settings.save_history else ""
+        self.last_usage: Any = None  # 最近一次请求的 context.usage 事件：系统提示、工具定义等各占多少（/context）
         if settings.save_history:
             try:
                 from mole_agent.history import HistoryRecorder
@@ -329,7 +447,7 @@ class Repl:
         self._turn_completed = False
         final = ""
         while True:
-            renderer = StreamRenderer(verbose=self.settings.verbose)
+            renderer = StreamRenderer(verbose=self.settings.verbose, compression=self.bundle.compression)
             unsubscribe = self.bundle.activity.subscribe(renderer.feed_subagent)
             try:
                 stream = Runner.run_agent_streaming(self.bundle.agent, {"query": query}, session=self.session_id)
@@ -337,8 +455,12 @@ class Repl:
                     renderer.feed(chunk)
             finally:
                 unsubscribe()
+                final = renderer.finish() or final
                 self._record(renderer.take_transcript())
-            final = renderer.finish() or final
+                self.last_usage = renderer.last_usage or self.last_usage
+                if self.history is not None:
+                    for note in renderer.compression_notes:
+                        self.history.system(note)
             if renderer.failed:
                 return final
             if not renderer.pending:
@@ -356,9 +478,13 @@ class Repl:
                 self.history.assistant(item)
             else:
                 name = str(_attr(item, "tool_name", ""))
+                text = str(_attr(item, "text", "") or "")
+                if name == "question":   # 历史里只记一行：把每个问题的回答拼起来，去掉首尾的固定说明
+                    lines = [line.strip().lstrip("- ") for line in text.splitlines() if line.strip()]
+                    text = "；".join(lines[1:-1]) or text
                 self.history.tool(
                     name, _format_args(name, _attr(item, "tool_args")), bool(_attr(item, "ok", True)),
-                    str(_attr(item, "decision", "")), str(_attr(item, "text", "") or ""),
+                    str(_attr(item, "decision", "")), text,
                 )
 
     async def _ask(self, message: str) -> str:
@@ -371,40 +497,57 @@ class Repl:
         for item in pending:
             req = item.request
             tool_name = _attr(req, "tool_name", "")
-            if tool_name == "ask_user":
-                interactive.update(item.interaction_id, await self._answer_ask_user(req))
+            if tool_name == "question":
+                interactive.update(item.interaction_id, await self._answer_question(req))
             else:
                 interactive.update(item.interaction_id, await self._answer_approval(tool_name, req))
         return interactive
 
-    async def _answer_ask_user(self, req: Any) -> dict[str, Any]:
-        questions = _attr(req, "questions") or []
-        console.print("\n[bold magenta]? 需要你的输入[/bold magenta]")
-        if not questions:
-            args = _attr(req, "tool_args")
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except ValueError:
-                    pass
-            question = (args.get("query") if isinstance(args, dict) else None) or _attr(req, "message", "")
-            console.print(f"  {question}", markup=False)
-            return {"answer": await self._ask("回答 › ")}
+    async def _answer_question(self, req: Any) -> dict[str, Any]:
+        """question 工具：逐个问题显示选项，收集回答。每个问题的回答是标签数组，回车跳过得到空数组。"""
+        from mole_agent.tools.question import CUSTOM_OPTION_LABEL, normalize_questions
 
-        answers: dict[str, str] = {}
-        for i, q in enumerate(questions, 1):
-            header = _attr(q, "header", f"Q{i}")
-            text = _attr(q, "question", "")
-            options = _attr(q, "options") or []
-            console.print(f"\n[cyan]{esc(header)}[/cyan] {esc(text)}")
-            for j, opt in enumerate(options, 1):
-                desc = _attr(opt, "description", "")
-                console.print(f"  [dim]{j}.[/dim] {esc(str(_attr(opt, 'label', '')))}" + (f" [dim]- {esc(str(desc))}[/dim]" if desc else ""))
-            ans = await self._ask("回答（可填序号或自由输入） › ")
-            if ans.isdigit() and 1 <= int(ans) <= len(options):
-                ans = str(_attr(options[int(ans) - 1], "label", ans))
-            answers[text] = ans
+        questions, _ = normalize_questions({"questions": list(_attr(req, "questions") or [])})
+        total = f"（共 {len(questions)} 个问题）" if len(questions) > 1 else ""
+        console.print(f"\n[bold magenta]? 需要你的输入[/bold magenta][dim]{total}[/dim]")
+        answers: list[list[str]] = []
+        for q in questions:
+            mode = ("可多选" if q.multiple else "单选") if q.options else "直接输入回答"
+            header = f"[cyan]{esc('[' + _short(q.header, 30) + ']')}[/cyan] " if q.header else ""
+            console.print(f"\n{header}{esc(q.question)} [dim]（{mode}）[/dim]")
+            for j, option in enumerate(q.options, 1):
+                desc = f" [dim]- {esc(option['description'])}[/dim]" if option.get("description") else ""
+                console.print(f"  [dim]{j}.[/dim] {esc(option['label'])}{desc}")
+            if q.custom and q.options:
+                console.print(f"  [dim]{len(q.options) + 1}. {CUSTOM_OPTION_LABEL}[/dim]")
+            answers.append(await self._ask_one_question(q))
         return {"answers": answers}
+
+    async def _ask_one_question(self, q: Any) -> list[str]:
+        from mole_agent.tools.question import parse_selection
+
+        how = "输入序号" + ("，多个用逗号或空格隔开" if q.multiple and q.options else "")
+        if not q.options:
+            how = "输入你的答案"
+        elif q.custom:
+            how += "，或直接输入答案"
+        while True:
+            selection = parse_selection(await self._ask(f"{how}；回车跳过 › "), q)
+            if selection.error:
+                console.print(f"  {selection.error}", style="yellow", markup=False)
+                continue
+            if selection.skip:
+                return []
+            if selection.text:
+                return [selection.text]
+            labels = list(selection.labels)
+            if selection.want_custom:
+                text = await self._ask("你的答案 › ")
+                if text:
+                    labels.append(text)
+                elif not labels:
+                    continue   # 选了「自己输入答案」又什么都没填：重新问
+            return labels
 
     async def _answer_approval(self, tool_name: str, req: Any) -> dict[str, Any]:
         args = _attr(req, "tool_args")
@@ -439,6 +582,7 @@ class Repl:
             if self.bundle.approval:
                 self.bundle.approval.always_allow.clear()
             self.bundle.usage.reset()
+            self.last_usage = None
             if self.history is not None:
                 self.history.start(self.session_id, self.settings.model_spec)
             return Message(f"已开启新会话 {self.session_id}")
@@ -499,6 +643,14 @@ class Repl:
 
             return AgentPrompt(prompt, on_finish=finish)
 
+        async def context(args):
+            await self._cmd_context()
+            return Message("")
+
+        async def compact(args):
+            await self._cmd_compact(args.strip())
+            return Message("")
+
         def candidates(name):
             if name == "model":
                 return [CompletionItem(c.spec) for c in usable_choices(self.settings)]
@@ -506,7 +658,7 @@ class Repl:
 
         return CommandContext(
             {"new": new, "usage": usage, "model": model, "models": models, "review": review, "init": init,
-             "history": history, "resume": resume},
+             "history": history, "resume": resume, "context": context, "compact": compact},
             candidates,
         )
 
@@ -556,8 +708,11 @@ class Repl:
 
     # ---------- 会话历史与续聊 ----------
     async def _pick_session(self, arg: str, action: str) -> Any:
-        """按序号 / 会话 id 前缀选一个历史会话；不带参数时列出来让用户选。返回 SessionSummary 或 None。"""
-        from mole_agent.history import list_sessions
+        """选一个历史会话，返回 SessionSummary 或 None。arg 的写法：
+        空 → 列出最近的会话让用户选；纯数字 → 列表里的序号；mole-xxxx → 会话 id（前缀即可）；
+        其他 → 关键词模糊搜索（标题和内容都搜，不区分大小写，多个词要都出现；加引号可以搜纯数字或短语）。
+        """
+        from mole_agent.history import list_sessions, search_keywords, search_sessions
 
         items = list_sessions(self.history.dir, limit=HISTORY_LIST_LIMIT)
         if not items:
@@ -565,7 +720,7 @@ class Repl:
             return None
         if not arg:
             print_history_list(items, self.session_id, self.settings.project_dir.name)
-            arg = await self._ask(f"输入序号{action}（回车返回） › ")
+            arg = await self._ask(f"输入序号{action}，或输入关键词搜索（回车返回） › ")
             if not arg:
                 return None
         if arg.isdigit():
@@ -573,11 +728,23 @@ class Repl:
                 console.print(f"[red]序号超出范围：1-{len(items)}[/red]")
                 return None
             return items[int(arg) - 1]
-        hits = [s for s in items if s.id.startswith(arg)]  # 也可以直接写会话 id（或能唯一确定它的前缀）
-        if len(hits) != 1:
-            console.print(f"[red]{'找不到' if not hits else '有多个'}以 {esc(arg)} 开头的会话[/red]")
+        if arg.startswith("mole-"):  # 会话 id（resume 提示、详情标题里显示的就是它）
+            by_id = [s for s in list_sessions(self.history.dir) if s.id.startswith(arg)]
+            if len(by_id) == 1:
+                return by_id[0]
+        keywords = search_keywords(arg)
+        hits = search_sessions(self.history.dir, arg)
+        if not hits:
+            console.print(f"[yellow]没有找到包含「{esc(' '.join(keywords) or arg)}」的会话[/yellow]")
             return None
-        return hits[0]
+        print_search_results(hits[:HISTORY_LIST_LIMIT], keywords, self.session_id, total=len(hits))
+        choice = await self._ask(f"输入序号{action}（回车返回） › ")
+        if not choice:
+            return None
+        if not choice.isdigit() or not 1 <= int(choice) <= min(len(hits), HISTORY_LIST_LIMIT):
+            console.print(f"[red]请输入 1-{min(len(hits), HISTORY_LIST_LIMIT)} 之间的序号[/red]")
+            return None
+        return hits[int(choice) - 1].session
 
     async def _cmd_history(self, arg: str) -> None:
         if self.history is None:
@@ -625,6 +792,7 @@ class Repl:
         if self.bundle.approval:
             self.bundle.approval.always_allow.clear()  # 「总是允许」只对当前这次会话有效，不跟着历史会话走
         self.bundle.usage.reset()
+        self.last_usage = None
         if self.history is not None and stored is not None:
             self.history.resume(stored)
             self.history.system(f"继续会话（模型 {self.settings.model_spec}）")
@@ -643,6 +811,64 @@ class Repl:
                 return await self.resume(item.id)
         console.print("[dim]当前项目没有可以继续的会话，已开启新会话[/dim]")
         return False
+
+    # ---------- 上下文：查看占用、手动压缩 ----------
+    async def _cmd_context(self) -> None:
+        from mole_agent.context import context_report
+
+        report = await context_report(self.bundle.agent, self.settings.model, self.session_id, self.last_usage,
+                                      expect_compression=self.bundle.compression is not None)
+        print_context_report(report, compression_enabled=self.bundle.compression is not None)
+
+    async def _cmd_compact(self, instruction: str) -> None:
+        """执行期间 Ctrl+C 只取消压缩：SDK 在压缩成功后才替换上下文，取消时保持原样。"""
+        loop = asyncio.get_running_loop()
+        task = asyncio.create_task(self._compact(instruction))
+        restore = _cancel_on_sigint(loop, task)
+        try:
+            await task
+        except asyncio.CancelledError:
+            console.print("\n[dim]⏹ 已中断，上下文没有改动[/dim]")
+        finally:
+            restore()
+
+    async def _compact(self, instruction: str) -> None:
+        from mole_agent.context import compact
+
+        if self.bundle.compression is None:
+            console.print("[yellow]上下文压缩没有开启（MOLE_ENABLE_CONTEXT_RAILS=false）[/yellow]")
+            return
+        started = False
+
+        def on_start(tokens: int, messages: int) -> None:
+            nonlocal started
+            started = True
+            keep = f"，重点保留：{_short(instruction, 40)}" if instruction else ""
+            console.print(f"⟳ 正在压缩上下文（{messages} 条消息，对话约 {fmt_tokens(tokens)} tokens{keep}）…",
+                          style="dim", end="", markup=False, soft_wrap=True)
+
+        outcome = await compact(self.bundle.agent, self.bundle.compression, self.session_id, instruction,
+                                on_start=on_start)
+        lead = " " if started else ""
+        if outcome.result == "empty":
+            console.print("[dim]当前会话还没有对话内容，不需要压缩[/dim]")
+        elif outcome.result == "not_loaded":
+            console.print("[yellow]这次启动后还没发过消息，压缩器还没装上：先接着聊一句再 /compact[/yellow]"
+                          "[dim]（上下文快满时发消息也会先自动压缩）[/dim]")
+        elif outcome.result == "busy":
+            console.print(f"{lead}[yellow]上下文正在被处理，稍后再试[/yellow]")
+        elif outcome.result == "compressed":
+            detail = (f"{outcome.messages_before} → {outcome.messages_after} 条消息，"
+                      f"对话约 {fmt_tokens(outcome.before)} → {fmt_tokens(outcome.after)} tokens（省 {outcome.saved_ratio:.0%}）")
+            console.print(f"{lead}[green]完成[/green]，{esc(detail)}", soft_wrap=True)
+            if self.history is not None:
+                self.history.system(f"手动压缩上下文：{detail}")
+        elif outcome.errors:
+            reason = outcome.errors[-1]
+            hint = failure_hint(reason, self.bundle.compression.stream_only)
+            console.print(f"{lead}失败，上下文保持原样：{reason}{hint}", style="yellow", markup=False, soft_wrap=True)
+        else:
+            console.print(f"{lead}[dim]没有可压缩的内容（最近几条消息总是原样保留）[/dim]")
 
     async def _cmd_models(self, arg: str) -> None:
         name = arg or self.settings.provider_name
@@ -744,6 +970,35 @@ def print_history_list(items: list[Any], current_id: str, project_name: str) -> 
         )
 
 
+def _highlight(text: str, keywords: list[str]) -> str:
+    """把关键词标成高亮，其余文字转义（结果是 rich markup）。"""
+    if not keywords:
+        return esc(text)
+    pattern = re.compile("|".join(re.escape(k) for k in keywords), re.IGNORECASE)
+    out, pos = [], 0
+    for match in pattern.finditer(text):
+        out.append(esc(text[pos:match.start()]))
+        out.append(f"[bold yellow]{esc(match.group(0))}[/bold yellow]")
+        pos = match.end()
+    out.append(esc(text[pos:]))
+    return "".join(out)
+
+
+def print_search_results(hits: list[Any], keywords: list[str], current_id: str, total: int) -> None:
+    from mole_agent.history import local_time
+
+    more = f"，只显示最近 {len(hits)} 个" if total > len(hits) else ""
+    console.print(f"[bold]搜索「{esc(' '.join(keywords))}」[/bold] [dim]找到 {total} 个会话 · 最近活动的在前{more}[/dim]")
+    for i, hit in enumerate(hits, 1):
+        item = hit.session
+        mark = "  [green]← 当前[/green]" if item.id == current_id else ""
+        console.print(
+            f"  [dim]{i:>2}.[/dim] {esc(local_time(item.updated_at))}  [dim]{item.user_turns:>2} 轮 · "
+            f"{esc(item.model)}[/dim]  {_highlight(item.title, keywords)}{mark}"
+        )
+        console.print(f"      [dim]{_highlight(hit.snippet, keywords)}[/dim]")
+
+
 def print_session_detail(session: Any, current: bool = False) -> None:
     from mole_agent.history import local_time
 
@@ -782,6 +1037,41 @@ def print_resume_summary(stored: Any, session_id: str, current_model: str) -> No
     console.print("[dim]  如果上次停在等你确认的操作上，接着聊时会先重新问你[/dim]")
 
 
+def _bar(ratio: float, threshold: float | None, width: int = 40) -> str:
+    filled = max(0, min(width, round(ratio * width)))
+    cells = ["█"] * filled + ["░"] * (width - filled)
+    if threshold:
+        mark = max(0, min(width - 1, round(threshold * width)))
+        cells[mark] = "│"
+    return "".join(cells)
+
+
+def print_context_report(report: Any, compression_enabled: bool = True) -> None:
+    stats = report.stats
+    note = "" if report.includes_prompt else "，未含系统提示和工具定义"
+    console.print(f"[bold]上下文[/bold]  约 {fmt_tokens(report.tokens)} / {fmt_tokens(report.window)} tokens"
+                  f"（{report.ratio:.0%}）[dim]{esc(note)}[/dim]")
+    if report.threshold:
+        auto = f"到 {report.threshold:.0%}（约 {fmt_tokens(int(report.window * report.threshold))}）自动压缩"
+    else:
+        auto = "自动压缩没有开启" if not compression_enabled else "没有找到自动压缩的阈值"
+    console.print(f"  {_bar(report.ratio, report.threshold)}  [dim]{esc(auto)}[/dim]")
+    source = f"（{report.window_note}）" if report.window_note else ""
+    console.print(f"  [dim]窗口[/dim]  {fmt_tokens(report.window)}[dim]{esc(source)}[/dim]")
+    console.print(
+        f"  [dim]对话[/dim]  {stats.get('total_dialogues', 0)} 轮 · {stats.get('total_messages', 0)} 条消息"
+        f"[dim]（用户 {stats.get('user_messages', 0)} · 助手 {stats.get('assistant_messages', 0)} · "
+        f"工具结果 {stats.get('tool_messages', 0)}）[/dim]"
+    )
+    parts = report.parts
+    if parts:
+        labels = (("system_prompt", "系统提示"), ("tools", "工具定义"), ("skills", "技能"), ("messages", "对话"))
+        items = " · ".join(f"{label} {fmt_tokens(parts[key])}" for key, label in labels if key in parts)
+        console.print(f"  [dim]最近一次请求[/dim]  {esc(items)}")
+    if compression_enabled:
+        console.print("  [dim]/compact 手动压缩，可以写上要保留的重点[/dim]")
+
+
 def _cancel_on_sigint(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> Any:
     """执行期间 Ctrl+C 只取消当前任务、回到输入框；返回恢复原处理方式的函数。
 
@@ -816,8 +1106,8 @@ def _friendly_error(exc: Exception) -> str:
         return f"触发限流，稍后再试：{msg}"
     if "timeout" in low or "timed out" in low:
         return f"请求超时，检查网络或调大 MOLE_TIMEOUT：{msg}"
-    if "context" in low and ("length" in low or "too long" in low):
-        return f"上下文超长，试试 /new 开新会话：{msg}"
+    if ("context" in low and ("length" in low or "too long" in low)) or is_zh_context_overflow(exc):
+        return f"上下文超长，自动压缩后仍然放不下：可以 /compact 手动压缩（可写上要保留的重点），或 /new 开新会话：{msg}"
     return f"{type(exc).__name__}: {msg}"
 
 

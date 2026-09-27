@@ -6,10 +6,12 @@ before/after_tool_call 等），priority 越大越先执行。这里演示几类
 - CommandGuardRail：硬拦截。bash 命令命中拒绝规则直接驳回，不执行、也不打扰用户。
 - ApprovalRail：人工确认。继承 SDK 的 ConfirmInterruptRail，高危工具先中断等人确认，
   并支持「本会话总是允许」。
+- QuestionRail：模型调用 question 工具向用户提问时中断，等用户在终端回答后把答案作为工具结果交回。
 - ReadOnlyShellRail：子 agent 专用，bash 只放行只读命令。
 - ToolTraceRail：旁路观测。把工具调用写进输出流（给终端 UI 渲染）并落审计日志；
   子 agent 的调用经 ActivityFeed 转给终端。
 - TokenUsageRail：统计 token 用量。
+- CompressionRail：上下文压缩器的适配（只收流式的网关、记录压缩失败原因），见 context.py。
 
 before_tool_call 执行顺序：CommandGuardRail(95) → ApprovalRail(90) → ToolTraceRail(5)
 命令类工具（SHELL_TOOLS）：bash，以及 Windows 上的 powershell，安全 rail 对两者同样生效。
@@ -27,11 +29,13 @@ from typing import Any, Callable, Iterable, Optional
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.session.interaction.base import AgentInterrupt
 from openjiuwen.core.session.stream.base import OutputSchema
+from openjiuwen.core.single_agent.interrupt import InterruptRequest
 from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.harness.rails import BaseInterruptRail, ConfirmInterruptRail
 from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
 
 from mole_agent.config import SHELL_TOOLS
+from mole_agent.tools import question as question_tool
 
 # rail 之间通过 ctx.extra 通信：记录被驳回的调用，供 ToolTraceRail 标记和审计
 _REJECTED_KEY = "mole_rejected_calls"
@@ -282,6 +286,34 @@ class TokenUsageRail(AgentRail):
         }
 
 
+class CompressionRail(AgentRail):
+    """上下文压缩器的两处适配，细节见 context.py：
+
+    - init：SDK 按 priority 从高到低初始化 rails，ContextProcessorRail(85) 先把压缩器配置放进 ReActAgent 的
+      config.context_processors，这里排在它后面；网关只收流式时，把其中的 model_client 换成只走流式的客户端。
+    - before_model_call：第一次调模型前订阅 SDK 的模型调用失败事件，记下压缩失败的原因（SDK 自己只写日志）。
+    """
+
+    priority = 50  # 必须低于 ContextProcessorRail(85)，init 时压缩器配置才已经在了
+
+    def __init__(self, watcher: Any, client_config_wrapper: Optional[Callable[[Any], Any]] = None) -> None:
+        super().__init__()
+        self.watcher = watcher
+        self.client_config_wrapper = client_config_wrapper
+
+    def init(self, agent: Any) -> None:
+        if self.client_config_wrapper is None:
+            return
+        config = getattr(getattr(agent, "react_agent", None), "config", None)
+        for _, processor_config in getattr(config, "context_processors", None) or []:
+            client_config = getattr(processor_config, "model_client", None)
+            if client_config is not None:
+                processor_config.model_client = self.client_config_wrapper(client_config)
+
+    async def before_model_call(self, ctx: Any) -> None:
+        await self.watcher.listen()
+
+
 # 只读 shell：子 agent 没有交互入口，不能靠人工确认兜底，所以只放行明确只读的命令
 _READ_ONLY_COMMANDS = {
     "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "find", "pwd", "echo",
@@ -396,7 +428,7 @@ class ReadOnlyShellRail(BaseInterruptRail):
             return self.approve()
         _mark_rejected(ctx, tool_call, "guard")
         return self.reject(tool_result=(
-            f"只读子 agent 不能执行这条命令（{reason}）。请改用 read_file / grep / glob / git_changes，"
+            f"只读子 agent 不能执行这条命令（{reason}）。请改用 read_file / grep / glob，或 git status / diff / log / show 等只读 git 命令，"
             "或在最终报告里建议主 agent 去执行。"
         ))
 
@@ -426,3 +458,31 @@ class ApprovalRail(ConfirmInterruptRail):
         if isinstance(decision, RejectResult):
             _mark_rejected(ctx, tool_call, "user")
         return decision
+
+
+class QuestionRequest(InterruptRequest):
+    """question 工具的中断请求：带上整理过（补齐默认值）的问题，终端据此显示。"""
+
+    questions: list[dict] = []
+
+
+class QuestionRail(BaseInterruptRail):
+    """拦下 question 工具：先中断等用户回答，恢复后把答案作为工具结果交回模型（工具本身不执行）。
+
+    参数不合法时不打扰用户，直接把错误说明作为工具结果返回，让模型改好再问。
+    """
+
+    priority = 90  # 与 ApprovalRail 同级；只处理 question，二者拦截的工具不重叠
+
+    def __init__(self) -> None:
+        super().__init__(tool_names=[question_tool.NAME])
+
+    async def resolve_interrupt(self, ctx, tool_call, user_input, auto_confirm_config=None):
+        questions, error = question_tool.normalize_questions(getattr(tool_call, "arguments", None))
+        if error:
+            return self.reject(tool_result=f"Error: {error}")
+        if user_input is not None:
+            answers = question_tool.parse_answers(user_input, questions)
+            if answers is not None:
+                return self.reject(tool_result=question_tool.format_answers(questions, answers))
+        return self.interrupt(QuestionRequest(questions=[q.to_dict() for q in questions]))

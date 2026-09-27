@@ -32,6 +32,7 @@ def _home_dir() -> Path:
 
 # 执行命令的工具：bash（Windows 上 SDK 会按命令自动选 PowerShell / Git Bash / cmd），
 # 以及只在 Windows 上注册的 powershell。确认、拦截规则对两者一视同仁。
+AGENT_ID = "mole_agent"  # 固定 id：checkpointer / sys_operation 等以它为键，重启后保持一致
 SHELL_TOOLS = ("bash", "powershell")
 
 

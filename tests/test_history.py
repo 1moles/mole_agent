@@ -221,3 +221,71 @@ def test_history_can_be_disabled(tmp_path: Path):
     repl = cli.Repl(settings, bundle=None)
     assert repl.history is None
     assert not (settings.home_dir / "sessions").exists()
+
+
+# ---------------------------------------------------------------- 搜索
+def _seed(settings: Settings) -> Path:
+    rec = HistoryRecorder(settings)
+    data = [
+        ("mole-s0000001", [("user", "你好"), ("assistant", "你好！我是 Mole，有什么可以帮你？")]),
+        ("mole-s0000002", [("user", "帮我看看 README"), ("tool", "read_file(README.md) → 成功：# Mole"),
+                           ("assistant", "README 介绍了安装步骤。")]),
+        ("mole-s0000003", [("user", "修一下登录的 bug"), ("assistant", "已经修好，顺便说声你好。")]),
+        ("mole-s0000004", [("user", "端口 8080 被占用了"), ("assistant", "换成 9090 吧")]),
+    ]
+    for i, (sid, messages) in enumerate(data):
+        rec.start(sid, "m")
+        for role, content in messages:
+            getattr(rec, role)(content) if role != "tool" else rec._add("tool", content)
+        os.utime(rec.dir / f"{sid}.json", (1_000_000 + i, 1_000_000 + i))
+    return rec.dir
+
+
+def test_search_matches_title_and_content(tmp_path: Path):
+    from mole_agent.history import search_sessions
+
+    d = _seed(_settings(tmp_path))
+    ids = lambda q: [h.session.id for h in search_sessions(d, q)]  # noqa: E731
+    assert ids("你好") == ["mole-s0000003", "mole-s0000001"]            # 标题里有、回复里有，都找出来，最近的在前
+    assert ids("readme") == ["mole-s0000002"]                           # 不区分大小写
+    assert ids("# mole") == ["mole-s0000002"]                           # 工具摘要里也搜（多个词：# 和 mole 都要出现）
+    assert ids("登录 你好") == ["mole-s0000003"]                        # 多个关键词要都出现
+    assert ids("不存在的词") == [] and ids("   ") == []
+    assert ids("mole") == ["mole-s0000002", "mole-s0000001"]            # 普通关键词，不当成会话 id
+
+
+def test_search_snippet_and_keyword_parsing(tmp_path: Path):
+    from mole_agent.history import search_keywords, search_sessions
+
+    assert search_keywords("登录 你好") == ["登录", "你好"]
+    assert search_keywords('"8080"') == ["8080"] and search_keywords("「登录 bug」") == ["登录 bug"]
+    d = _seed(_settings(tmp_path))
+    hit = next(h for h in search_sessions(d, "你好") if h.session.id == "mole-s0000003")
+    assert hit.snippet.startswith("回复：") and "你好" in hit.snippet    # 片段显示命中的那条消息
+    assert [h.session.id for h in search_sessions(d, '"8080"')] == ["mole-s0000004"]
+
+
+async def test_history_keyword_search_after_new_session(repl_env, capsys):
+    """复现：输入「你好」→ 模型回答 → /new → /history 你好，要能找到刚才的会话。"""
+    settings, repl, fake, answers = repl_env
+    fake.plan(("你好！有什么可以帮你？", []))
+    await repl.run_interruptible("你好")
+    first_id = repl.session_id
+    await repl.handle_slash("/new")
+    capsys.readouterr()
+
+    answers[:] = ["1"]
+    await repl.handle_slash("/history 你好")
+    out = capsys.readouterr().out
+    assert "找不到" not in out and "搜索「你好」" in out and "找到 1 个会话" in out
+    assert first_id in out and "有什么可以帮你" in out                 # 选 1 后显示了详情
+
+    await repl.handle_slash("/history 帮你")                            # 只在回复里出现的词也能搜到
+    assert "找到 1 个会话" in capsys.readouterr().out
+
+    await repl.handle_slash("/history 完全不相关")
+    assert "没有找到包含「完全不相关」的会话" in capsys.readouterr().out
+
+    answers[:] = ["你好", "1"]                                          # 不带参数时，也可以在提示里输入关键词
+    await repl.handle_slash("/history")
+    assert "搜索「你好」" in capsys.readouterr().out
